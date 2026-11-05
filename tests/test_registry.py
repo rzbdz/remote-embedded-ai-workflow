@@ -163,8 +163,9 @@ def test_port_watcher_reports_cables_coming_and_going(tmp_path):
 
 
 def test_registry_publishes_port_changes(registry):
+    registry.post("/api/v1/registry/announce", json={"host": "lab-2", "port": 8765})       # before it watched ports
     body = {"host": "lab-2", "port": 8765, "ports": {"tty": ["/dev/ttyUSB0"], "usb": []}}
-    registry.post("/api/v1/registry/announce", json=body)
+    registry.post("/api/v1/registry/announce", json=body)                                   # no news: nothing to compare
     registry.post("/api/v1/registry/announce", json={**body, "ports": {"tty": ["/dev/ttyUSB0", "/dev/ttyUSB3"],
                                                                          "usb": ["usb:2-1.3 361c:1001"]}})
     events = [e for e in registry.get("/api/v1/events/recent?limit=50").json()["result"] if e["topic"] == "registry.ports"]

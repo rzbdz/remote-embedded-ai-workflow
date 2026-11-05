@@ -93,7 +93,8 @@ class RegistryModule(Module):
             self._save()
         if changed:
             self.ctx.bus.publish("registry.announced", host=host, addresses=addrs, new=not old)
-        if "ports" in changed and old:
+        # A host's first announcement with ports (a new host, or one that just got the port watcher) is no news.
+        if "ports" in changed and old and old.get("ports"):
             before, now = old.get("ports") or {}, entry["ports"]
             added = {k: sorted(set(now.get(k, [])) - set(before.get(k, []))) for k in ("tty", "usb")}
             removed = {k: sorted(set(before.get(k, [])) - set(now.get(k, []))) for k in ("tty", "usb")}
