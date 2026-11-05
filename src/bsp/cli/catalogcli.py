@@ -120,8 +120,12 @@ def run(args, store: RemoteStore, token: str | None) -> tuple[Any, str]:
     def call(tool: str, **kw: Any) -> Any:
         r = h.call(tool, {k: v for k, v in kw.items() if v is not None}, timeout=120)
         if not r.get("ok"):
+            from ..core.errors import Conflict, Forbidden, NotFound
+
             e = r.get("error") or {}
-            raise BspError(e.get("message", "error"), hint=e.get("hint"), details=e.get("details"))
+            cls = {"conflict": Conflict, "not_found": NotFound, "invalid_request": InvalidRequest,
+                   "forbidden": Forbidden}.get(e.get("code"), BspError)
+            raise cls(e.get("message", "error"), hint=e.get("hint"), details=e.get("details"))
         return r["result"], r.get("text")
 
     c = args.catalog_cmd

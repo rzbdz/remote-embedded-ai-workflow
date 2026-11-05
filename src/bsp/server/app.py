@@ -163,6 +163,8 @@ def create_app(config: HostConfig) -> FastAPI:
             hub.announcer = announcer
             if hub.follower:
                 announcer.on_reply = lambda result: hub.follower.check(result.get("catalog_rev"))
+                # tell the registry at once which catalog revision this host now has
+                hub.bus.on("catalog.updated", lambda ev: announcer.poke())
                 await run_in_threadpool(hub.follower.sync)
             hub.bus.on("dut.ports", lambda ev: announcer.poke())     # tell the registry about new cables at once
             announcer.start()
