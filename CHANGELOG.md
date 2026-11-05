@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- Boot and flash recipes no longer fail on a board that is already in download mode: either the
+  boot ROM's console banner or its USB download device now counts as being in download mode.
+
 ### Added
 - Hosts watch for serial and USB devices coming and going (`dut.ports`) and tell the registry at
   once (`registry.ports`); `bsp watch --registry [--json]` streams the registry's events.

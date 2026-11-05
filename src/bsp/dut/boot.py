@@ -61,9 +61,20 @@ class BootRunner:
 
     def enter_fdl(self, log: Log, timeout: float = 30) -> None:
         mark = self.console.mark()
-        self.control.enter_fdl(log, self.download_evidence(mark))
-        if self.download_mode.get("console"):
-            self.console.wait(mark, self.download_mode["console"], None, timeout)
+        seen = self.download_evidence(mark)
+        self.control.enter_fdl(log, seen)
+        # Either sign will do: the boot ROM's banner on the console, or its download device on USB. A board that was
+        # already in download mode prints no new banner, so waiting for the console alone failed on it.
+        deadline = time.monotonic() + timeout
+        while not seen():
+            if time.monotonic() > deadline:
+                raise HardwareTimeout(
+                    f"no sign of download mode within {timeout:g}s: neither the boot ROM's banner on the console"
+                    + (f" (/{self.download_mode['console']}/)" if self.download_mode.get("console") else "")
+                    + f" nor its download device on {self.fb.usb}",
+                    hint="see `bsp dut log <dut>`; the board may be in another stage",
+                    details={"console_tail": "\n".join(self.console.tail(15))})
+            time.sleep(0.3)
         dev = self.wait_fastboot(self.download_mode.get("fastboot") or ".", timeout, log)
         log(f"board in download mode on {dev['usb']} ({dev['product']})")
 

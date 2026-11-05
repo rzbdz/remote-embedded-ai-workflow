@@ -317,3 +317,27 @@ def test_human_probe_pairs_the_console_that_speaks_with_the_usb_port_that_appear
     assert all(s["soc"] == "soc-b" and s["probed"]["human"] for s in specs)
     assert res["unmatched_consoles"] == []
     assert sum("ACTION NEEDED" in l for l in lines) == 2 and events[0]["dut"] == "probe@lab-9"
+
+
+def test_enter_fdl_accepts_a_board_already_in_download_mode(tmp_path):
+    """A board already in download mode prints no new boot-ROM banner; its USB download device is enough."""
+    con = FakeConsole(tmp_path)
+    fb = FakeFastboot(con)                       # on the bus as "DFU download" already
+
+    class Quiet:
+        def enter_fdl(self, log, ready=None):
+            assert ready() == "download-mode device on usb:2-1.2 (DFU download)"
+
+    lines = []
+    BootRunner("b1", Quiet(), fb, con, FakeStore(), download_mode={"console": "download handler", "fastboot": "DFU"}) \
+        .enter_fdl(lines.append, timeout=2)
+    assert lines[-1] == "board in download mode on usb:2-1.2 (DFU download)"
+    class Nothing:
+        def enter_fdl(self, log, ready=None):
+            pass
+
+    fb.product = None                            # neither sign: the error names both
+    with pytest.raises(HardwareTimeout) as e:
+        BootRunner("b1", Nothing(), fb, con, FakeStore(), download_mode={"console": "download handler"}) \
+            .enter_fdl(lines.append, timeout=0.5)
+    assert "neither the boot ROM's banner" in e.value.message and "usb:2-1.2" in e.value.message
