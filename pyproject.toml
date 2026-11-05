@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bsp-dev-loop"
+version = "0.1.0b0"
+description = "bsp dev-loop: DUT / host-controller / SDK resource services (AI, CLI and HTTP native)"
+readme = "README.md"
+requires-python = ">=3.10"
+# The client CLI (`bsp`) is stdlib-only; server deps live in the [server] extra.
+dependencies = []
+
+[project.optional-dependencies]
+server = ["fastapi>=0.110", "uvicorn>=0.29", "pyyaml>=6"]
+gpiod = ["gpiod>=2.1"]
+dev = ["pytest>=7", "httpx>=0.27"]
+
+[project.scripts]
+bsp = "bsp.cli.main:main"
+bsp-hostd = "bsp.server.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"bsp.server" = ["web/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

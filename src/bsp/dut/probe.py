@@ -1,0 +1,271 @@
+"""Board discovery on one host (`bsp probe`).
+
+Pipeline (each stage is a replaceable piece):
+
+  candidates   pins   : free header GPIOs from the gpio_relay service
+               consoles: hooks/probe/consoles   (serial-mux aliases + raw ttys)
+               usb     : hooks/probe/usb-devices (download-mode vendor ids)
+  correlate    for each pin: pulse it like a reset button, then watch every
+               console for new output and every USB port for (re)enumeration.
+               A pin that makes exactly one console speak is a reset line; the
+               USB port that re-enumerated at the same time is its fastboot port.
+  identify     hooks/probe/identify, driven by the detected SoC profile: stages the
+               profile's probe images and extracts identity fields -> name hint
+  propose      one DUT spec per board; the CLI lets a human edit names, then
+               registers them with `dut.add` (agents pass --yes)
+
+Nothing is registered by the probe job itself.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import termios
+import threading
+import time
+from pathlib import Path
+from typing import Any, Callable
+
+from ..core.errors import InvalidRequest, BspError
+
+Log = Callable[[str], None]
+
+
+class _RawTtyWatcher:
+    """Reads a raw tty (not owned by serial-mux) during the observation window."""
+
+    def __init__(self, device: str, baud: int = 115200):
+        self.device, self.data, self._stop = device, bytearray(), threading.Event()
+        self.fd = os.open(device, os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY)
+        attrs = termios.tcgetattr(self.fd)
+        attrs[0] = attrs[1] = attrs[3] = 0
+        attrs[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
+        speed = getattr(termios, f"B{baud}", termios.B115200)
+        attrs[4] = attrs[5] = speed
+        termios.tcsetattr(self.fd, termios.TCSANOW, attrs)
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                chunk = os.read(self.fd, 4096)
+                if chunk:
+                    self.data += chunk
+                    continue
+            except BlockingIOError:
+                pass
+            except OSError:
+                break
+            time.sleep(0.05)
+
+    def take(self) -> bytes:
+        out, self.data = bytes(self.data), bytearray()
+        return out
+
+    def close(self) -> None:
+        self._stop.set()
+        self.thread.join(1)
+        os.close(self.fd)
+
+
+class Prober:
+    def __init__(self, mod, pins: str | None, consoles: str | None, identify: bool,
+                 default_sdks: list[str] | None):
+        self.mod = mod
+        self.cfg = mod.probe_cfg
+        self.want_pins = [p.strip() for p in (pins or "").split(",") if p.strip()]
+        self.want_consoles = [c.strip() for c in (consoles or "").split(",") if c.strip()]
+        self.identify = identify
+        self.default_sdks = default_sdks
+        self.watch_s = float(self.cfg.get("watch_s", 3.0))
+        self.pulse_ms = int(self.cfg.get("pulse_ms", 1000))
+        self.socs = mod.socs
+        # USB devices to watch: configured, else every SoC profile's ids, else all devices
+        self.vids = self.cfg.get("usb_vids") or self.socs.usb_vids()
+
+    # ------------------------------------------------------- candidates --
+    def _gpio(self):
+        return self.mod.ctx.service("gpio_relay")
+
+    def _used(self) -> dict[str, set]:
+        used: dict[str, set] = {"pins": set(), "consoles": set(), "usb": set()}
+        gpio = self._gpio()
+        for b in self.mod.boards.values():
+            used["usb"].add(b.spec.usb)
+            used["consoles"].add(b.spec.console_alias)
+            for role in ("reset", "fdl"):
+                pin = (b.spec.control.get(role) or {}).get("pin")
+                if pin:
+                    used["pins"].add(gpio.resolve(pin).key)
+        return used
+
+    def candidate_pins(self) -> list[dict[str, Any]]:
+        gpio, used = self._gpio(), self._used()
+        if self.want_pins:
+            return [gpio.get(p) for p in self.want_pins]
+        out = []
+        for p in gpio.list_pins(gpio_only=True):
+            mux = p.get("pinmux") or {}
+            if p["key"] in used["pins"] or p.get("protected") or mux.get("conflict") or p.get("busy"):
+                continue
+            out.append(p)
+        # pins already set up as relay/button lines are the likeliest resets: try them first
+        out.sort(key=lambda p: (p["channel"]["mode"] == "gpio", p["number"]))
+        return out
+
+    def candidate_consoles(self, log: Log) -> list[dict[str, Any]]:
+        used = self._used()
+        res = self.mod.hooks.run("probe", "consoles", {
+            "serial_mux_run": str(Path(self.mod.serial_log_dir).parent / "run")}, timeout=30, log=log)
+        cons = [c for c in res.data.get("consoles", []) if c.get("alias") not in used["consoles"]]
+        if self.want_consoles:
+            cons = [c for c in cons if c["id"] in self.want_consoles or c.get("device") in self.want_consoles]
+        return cons
+
+    def usb_snapshot(self) -> dict[str, dict[str, Any]]:
+        res = self.mod.hooks.run("probe", "usb-devices", {"vids": self.vids}, timeout=30)
+        return {d["usb"]: d for d in res.data.get("devices", [])}
+
+    def plan(self) -> dict[str, Any]:
+        lines: list[str] = []
+        return {"host": self.mod.ctx.host_id,
+                "pins": [p["target"] for p in self.candidate_pins()],
+                "consoles": self.candidate_consoles(lines.append),
+                "usb": list(self.usb_snapshot().values()),
+                "existing_duts": sorted(self.mod.boards),
+                "identify": self.identify}
+
+    # ------------------------------------------------------------- run --
+    def run(self, log: Log) -> dict[str, Any]:
+        pins = self.candidate_pins()
+        consoles = self.candidate_consoles(log)
+        if not consoles:
+            raise InvalidRequest("no free serial console on this host",
+                                 hint="plug the board's USB-UART in (or start serial-mux for it) and rerun")
+        log(f"candidates: {len(pins)} pin(s), {len(consoles)} console(s) "
+            f"[{', '.join(c['id'] for c in consoles)}], usb {sorted(self.usb_snapshot())}")
+        found: list[dict[str, Any]] = []
+        pending = {c["id"]: c for c in consoles}
+        raw = {c["id"]: _RawTtyWatcher(c["device"]) for c in consoles if c["kind"] == "tty"}
+        try:
+            for pin in pins:
+                if not pending:
+                    break
+                hit = self._try_pin(pin, pending, raw, log)
+                if hit:
+                    found.append(hit)
+                    pending.pop(hit["console"]["id"], None)
+        finally:
+            for w in raw.values():
+                w.close()
+        log(f"correlated {len(found)} board(s); unmatched consoles: {sorted(pending) or 'none'}")
+        proposals = [self._propose(h, i, log) for i, h in enumerate(found)]
+        self._uniquify(proposals)
+        return {"host": self.mod.ctx.host_id, "proposals": proposals,
+                "unmatched_consoles": list(pending.values()),
+                "next": "review names, then `bsp dut add` each proposal (the CLI does this interactively)"}
+
+    def _try_pin(self, pin: dict[str, Any], pending: dict, raw: dict, log: Log) -> dict[str, Any] | None:
+        gpio = self._gpio()
+        marks = {cid: self._mark(c) for cid, c in pending.items()}
+        for w in raw.values():
+            w.take()
+        before = self.usb_snapshot()
+        level = "low" if pin["channel"]["mode"] == "gpio" else None
+        try:
+            gpio.pulse(pin["target"], self.pulse_ms, level, True, False)
+        except BspError as e:
+            log(f"{pin['target']}: skip ({e.message})")
+            return None
+        time.sleep(self.watch_s)
+        spoke = {}
+        for cid, c in pending.items():
+            text = raw[cid].take().decode("utf-8", "replace") if cid in raw else self._read(c, marks[cid])
+            if text.strip():
+                spoke[cid] = text
+        after = self.usb_snapshot()
+        changed = [u for u, d in after.items() if u not in before or before[u].get("devnum") != d.get("devnum")]
+        if len(spoke) != 1:
+            log(f"{pin['target']} ({pin['label']}): {'no console reacted' if not spoke else 'ambiguous: ' + ', '.join(spoke)}")
+            return None
+        cid, text = next(iter(spoke.items()))
+        fdl = self.socs.in_download_mode(text, " ".join(after[u].get("product", "") for u in changed))
+        log(f"{pin['target']} ({pin['label']}) resets console {cid}; usb {changed or 'none'}; "
+            f"{'lands in FDL' if fdl else 'no FDL signature'}")
+        soc, score = self.socs.detect(text)
+        if soc:
+            log(f"  boot-ROM fingerprint -> {soc} ({score} marker(s) matched)")
+        return {"pin": pin, "console": pending[cid], "usb": changed[0] if len(changed) == 1 else None,
+                "usb_candidates": changed, "fdl": fdl, "console_text": text[-400:], "soc": soc}
+
+    def _mark(self, c: dict[str, Any]):
+        if c["kind"] != "serial-mux":
+            return None
+        from datetime import date
+
+        p = Path(c["log"]) / f"{date.today().isoformat()}.log"
+        return p, (p.stat().st_size if p.exists() else 0)
+
+    def _read(self, c: dict[str, Any], mark) -> str:
+        if not mark:
+            return ""
+        p, off = mark
+        return p.read_bytes()[off:].decode("utf-8", "replace") if p.exists() else ""
+
+    # --------------------------------------------------------- propose --
+    def _propose(self, hit: dict[str, Any], index: int, log: Log) -> dict[str, Any]:
+        ident: dict[str, Any] = {}
+        soc = hit.get("soc") or self.cfg.get("default_soc")
+        prof = self.socs.get(soc)
+        if self.identify and hit["usb"] and hit["fdl"] and prof.get("identify"):
+            req = {"usb": hit["usb"], "fastboot": self.mod.fastboot_bin, "soc": soc,
+                   "console_log": hit["console"].get("log"), "profile": prof, "timeout": 60}
+            try:
+                res = self.mod.hooks.run("probe", "identify", req, timeout=180, log=log)
+                ident = res.data if res.applicable else {}
+            except BspError as e:
+                log(f"identify failed: {e.message} (keeping a generic name)")
+        elif self.identify:
+            log(f"identify skipped: no SoC profile with an identify section for {soc or 'this board'}")
+        con = hit["console"]
+        alias = con.get("alias")
+        name = ident.get("name_hint") or f"{soc or 'unknown'}-board"
+        # empty = every SDK target of this SoC (resolved by the host at use time)
+        sdks = self.default_sdks or (self.cfg.get("default_sdks") or {}).get(soc, [])
+        spec = {
+            "id": name,
+            "board": (ident.get("fields") or {}).get("product") or "unknown",
+            "soc": soc,
+            "description": (ident.get("fields") or {}).get("model") or "probed board",
+            "console": {"alias": alias or name, **({"device": con["device"], "start": True} if not alias else {}),
+                        "usb_port": con.get("usb_port")},
+            "fastboot": {"usb": hit["usb"] or "usb:UNKNOWN"},
+            "control": {"backend": "gpio-relay",
+                        "reset": {"pin": hit["pin"]["target"], "mode": "button", "pulse_ms": self.pulse_ms},
+                        "fdl": {"strategy": "strapped" if hit["fdl"] else "button"}},
+            "sdks": sdks,
+            "identity": ident,
+            "probed": {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "gpio": hit["pin"]["label"],
+                       "usb_candidates": hit["usb_candidates"]},
+        }
+        warnings = []
+        if not hit["usb"]:
+            warnings.append("no unique USB port re-enumerated: set fastboot.usb by hand (`fastboot devices -l`)")
+        if not hit["fdl"]:
+            warnings.append("reset did not land in FDL: this board needs an FDL line (control.fdl.pin)")
+        return {"spec": spec, "warnings": warnings, "evidence": hit["console_text"]}
+
+    @staticmethod
+    def _uniquify(proposals: list[dict[str, Any]]) -> None:
+        seen: dict[str, int] = {}
+        for p in proposals:
+            base = p["spec"]["id"]
+            seen[base] = seen.get(base, 0) + 1
+        counter: dict[str, int] = {}
+        for p in proposals:
+            base = p["spec"]["id"]
+            if seen[base] > 1:
+                counter[base] = counter.get(base, 0) + 1
+                p["spec"]["id"] = f"{base}-{counter[base]}"
