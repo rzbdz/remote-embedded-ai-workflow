@@ -38,12 +38,13 @@ build:
   targets: {kernel: kernel, uboot: uboot, all: all}      # component -> make target
   clean: {kernel: clean_kernel}
 artifacts:
-  dir: output                  # relative to the tree; may use {field} of the instance
-  roles:                       # role -> file name (globs pick the newest match)
+  dir: output                  # relative to the tree; may contain {plat}
+  roles:                       # role -> file name, may contain {plat} (globs pick the newest match)
     fsbl: FSBL.bin
     uboot-sbi: u-boot-opensbi.itb
     kernel-fit: Image.itb
 dev_projects: [linux]          # git repositories inside the tree that a lease branches
+env: {path_prepend: [], vars: {}}   # added to the build server's job environment
 console: {prompt: "# $"}       # shell prompt on the booted board
 ```
 
@@ -107,6 +108,18 @@ boot:
     notes: "flash layout not described yet"
     steps: []
 ```
+
+### Overriding the family per target
+
+| Key | Effect |
+|---|---|
+| `build.targets` | Extra or replaced component → target entries (merged over the family's) |
+| `build.pre` | Per component, a shell command run in the tree before the build target |
+| `artifacts` | Extra or replaced role → file name entries |
+| `artifacts_dir` | Replaces the family's `artifacts.dir` |
+| `plat` | Platform name: argument of the envsetup script and `{plat}` in artifact paths |
+| `dev_projects`, `env`, `console` | Replace the family's value; a shared workspace's value wins over both |
+| any other field | Available as `{field}` in `script` runner targets (e.g. `board:` for `./build.sh -b {board}`) |
 
 Both `load` and `download` must be present; an unfinished one is `status: todo` with `notes`,
 which `bsp dut boot` shows instead of running anything.

@@ -1,8 +1,8 @@
-# bsp hooks
+# Hooks
 
 Replaceable executables with a JSON contract (`src/bsp/core/hooks.py`).
 
-```
+```text
 <hooks-dir>/<kind>/<name>          any executable (python, sh, ...)
 stdin   one JSON object (request)
 stdout  progress lines, then ONE JSON object on the last line (result)

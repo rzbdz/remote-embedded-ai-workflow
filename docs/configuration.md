@@ -71,7 +71,8 @@ server:
   bind: 0.0.0.0                  # default 127.0.0.1 (local only)
   port: 8765
   state_dir: /var/lib/bsp        # leases, probed boards, runtime GPIO settings, artifact cache
-  auth_token: null               # set it whenever bind is not 127.0.0.1 (see SECURITY.md)
+  auth_token: null               # set it whenever bind is not 127.0.0.1, here or as BSP_TOKEN in
+                                 # /etc/bsp/hostd.env on the host (see SECURITY.md)
 modules:
   gpio_relay:                    # list it before dut: dut drives reset lines through it
     board: example-40pin         # a boards/<id>.yaml from a pack or the site
@@ -123,7 +124,8 @@ host: lab-1
 board: board-x                   # board model, free text
 soc: soc-b                       # a SoC profile id
 description: shelf 2, left
-console: {alias: example-board}  # serial-mux alias; add `device: /dev/ttyUSB0` to start one
+console: {alias: example-board}  # serial-mux alias; add `device: /dev/ttyUSB0` to start one,
+                                 # `prompt: "# $"` to override the SDK's shell prompt
 fastboot: {usb: "usb:1-1.2"}     # the selector `fastboot devices -l` shows
 control:
   backend: gpio-relay            # gpio-relay | human (alias: manual) | home-assistant (stub)
@@ -132,6 +134,7 @@ control:
     strategy: strapped           # strapped: every reset enters download mode
                                  # button: hold `pin`, pulse reset, release
     # pin: P35
+    # expect: {console: "...", fastboot: "..."}   # override the SoC profile's download_mode
   human:                         # human backend only (all optional)
     timeout_s: 900
     reset: "press the red button"
@@ -139,7 +142,7 @@ control:
 sdks: []                         # empty = every SDK target of the board's SoC
 ```
 
-Probed and bound boards are stored on their host; `bsp dut export` prints them in this format.
+Probed and bound boards are stored on their host; `bsp dut export --dir DIR` writes them in this format, one file per board.
 
 ## Clients
 
@@ -190,6 +193,7 @@ and a host must be named explicitly.
 |---|---|---|
 | `BSP_SITE` | all | Site directory |
 | `BSP_URL`, `BSP_REMOTE` | client | Host selection (see above) |
+| `BSP_TOKEN` | client, host | API token: sent by the client (like `--token`); required by the host for changes |
 | `BSP_STATELESS` | client | `1`: ignore saved defaults and lease tokens |
 | `BSP_LEASE`, `BSP_SDK_LEASE` | client | Lease token for `dut` / `sdk` commands |
 | `BSP_HOLDER` | client | Holder name for leases (default `$USER`) |
@@ -197,4 +201,4 @@ and a host must be named explicitly.
 | `BSP_SDK_CATALOG` | client | An extra SDK catalog directory, highest priority |
 | `BSP_SDK_LOCAL` | client | `1`: run SDK operations locally instead of over ssh (on the build server) |
 | `BSP_HOOKS_PATH` | host | Extra hook directories (`:`-separated), searched first |
-| `BSP_BIND`, `BSP_PORT`, `BSP_STATE_DIR`, `BSP_TOKEN` | host | Override `server.*` in the host config |
+| `BSP_BIND`, `BSP_PORT`, `BSP_STATE_DIR` | host | Override `server.*` in the host config (also settable in `/etc/bsp/hostd.env`) |

@@ -23,7 +23,10 @@ fi
 venv/bin/pip install -q --disable-pip-version-check -U "pip>=25"
 echo "--> pip install (deps cached after first run)"
 # editable: hooks/ and skills/ are found next to the source tree
-venv/bin/pip install -q --disable-pip-version-check -e "$INSTALL_DIR/app[server]"
+EXTRAS=server
+# the gpiod backend needs the gpiod Python package (and the libgpiod system library)
+grep -Eq '^\s*backend:\s*gpiod' "site/hosts/$HOST_ID.yaml" && EXTRAS=server,gpiod
+venv/bin/pip install -q --disable-pip-version-check -e "$INSTALL_DIR/app[$EXTRAS]"
 if [[ -f app/third_party/serial-mux/pyproject.toml ]]; then
   echo "--> serial-mux (submodule) into the bsp venv"
   venv/bin/pip install -q --disable-pip-version-check -e app/third_party/serial-mux

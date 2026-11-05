@@ -27,14 +27,18 @@ the example and keep it under version control privately:
 ```bash
 cp -r examples/site ~/bsp-site
 cd ~/bsp-site && git init && cd -
-export BSP_SITE=~/bsp-site        # or move/link it to ~/.config/bsp/site
+export BSP_SITE=~/bsp-site
 ```
+
+Keep the site repository at a location of your choice and point `BSP_SITE` at it.
+`~/.config/bsp/site` is where `install-client.sh --site` installs *copies* of the site on other
+machines; the script refuses to overwrite a git checkout or symlink there.
 
 The minimum useful site describes one board host. Replace the example values in:
 
 | File | What to set |
 |---|---|
-| `hosts/HOST.yaml` | Host id, `server.bind` / `server.auth_token`, the GPIO header (`modules.gpio_relay.board`, `backend`), and `modules.dut` |
+| `hosts/HOST.yaml` | Host id, `server.bind` and `server.auth_token` (see [SECURITY.md](../SECURITY.md)), the GPIO header (`modules.gpio_relay.board`, `backend`), and `modules.dut` |
 | `deploy/HOST.env` | How to reach the host over ssh (`SSH_HOST`, `SSH_USER`), `INSTALL_DIR`, `SERVICE_PORT` |
 | `remotes.json` | How clients reach the host: `url`, optional `fallback_urls`, and `ssh` for tunnelling |
 | `boards/*.yaml` | The pin map of the host's GPIO header, if no pack provides it |
@@ -68,8 +72,9 @@ This copies bsp to `~/bsp-dev-loop`, links `~/.local/bin/bsp` (make sure it is o
 
 ```console
 $ bsp init
+config dir: /home/dev/.config/bsp
 mode: remote (talking to remote hosts)
-  host lab-1            via http://192.0.2.20:8765  duts: (none)
+  host lab-1            via http://192.0.2.20:8765  duts: -
 next: `bsp probe` to discover boards, `bsp dut list`, `bsp sdk list`
 ```
 
@@ -78,12 +83,15 @@ next: `bsp probe` to discover boards, `bsp dut list`, `bsp sdk list`
 ### Option A: probe (boards wired to GPIO reset lines)
 
 `bsp probe` pulses candidate GPIO lines one at a time and watches which console and USB port
-react, so it **drives pins on the header**. Before the first probe:
+react, so it **drives pins on the header**. Without `--pins` the candidates are every header GPIO
+that is free, not protected and not muxed to another function; pins already configured as
+`button` or `relay` channels are tried first, raw `gpio` pins are pulsed low. Before the first
+probe:
 
 - list pins that must never be driven under `protected:` in the host config;
-- configure the pins wired to reset buttons as `button` channels (open drain), or pass them
-  explicitly with `--pins`;
-- run `bsp probe --dry-run` to see the candidates without touching anything.
+- run `bsp probe --dry-run` to see the candidates without touching anything;
+- on any host where other header lines drive something, pass the reset lines explicitly with
+  `--pins`, preferably configured as `button` channels (open drain).
 
 ```bash
 bsp probe --dry-run
@@ -92,8 +100,9 @@ bsp probe --pins P33,P11          # interactive: review and name each board
 
 Probe identifies the SoC from its boot-ROM output and, if the SoC profile provides one, boots a
 known-good bootloader to read the board's identity. Rename boards with
-`bsp dut rename OLD NEW`, and save `bsp dut export` output under `SITE/duts/` to keep them in
-the site.
+`bsp dut rename OLD NEW`. To keep them in the site, run `bsp dut export --dir $BSP_SITE/duts`
+(one file per board), remove the registered copies with `bsp dut remove`, and redeploy the host
+so it loads the files. Boards can also simply stay registered on the host.
 
 ### Option B: bind (no GPIO wiring)
 

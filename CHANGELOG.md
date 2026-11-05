@@ -6,24 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0b0] - 2026-11-05
+
+First public beta.
+
 ### Added
-- `bsp dut bind`: register a board from a serial console and a USB port, without GPIO wiring.
-- `human` control backend (alias `manual`): bsp asks a person to reset the board and continues on
-  `bsp dut confirm` or when the board appears in download mode.
-- Console logins: `ssh bsp-<dut>@<host>` opens a board's console without a password (opt-in,
-  managed and cleaned up by the host). `bsp dut logins` lists them.
-- `nudge` option for `wait` steps, for shell prompts printed without a newline.
-- `bsp hints` and site hints in the `SKILL.md` written by `bsp install`.
+- Board leases, board registry and discovery (`bsp probe`), with SoC identification from
+  boot-ROM output.
+- Remote SDK workspaces on build servers: leases that park the owner's work on a task branch,
+  detached builds, remote file access and commands.
+- Boot recipes for RAM boot (`load`) and flashing (`download`), including hook steps for vendor
+  flash tools and a `nudge` option for prompts printed without a newline.
+- GPIO relay module with a web console: header pin map, channel modes, aliases, pin-mux checks.
+- `bsp dut bind` and the `human` control backend: boards without reset wiring, reset by a person
+  on request and resumed with `bsp dut confirm` or automatic download-mode detection.
+- Console logins: `ssh bsp-<dut>@<host>` opens a board's console (opt-in).
+- Multi-host CLI over HTTP or ssh tunnels, `--json` output and stateless mode for agents.
+- Agent skills, `bsp install` and `bsp hints`; the end-to-end acceptance test in `e2e-material/`.
+- Configuration layers: core, hardware packs (`packs/spacemit` for SpacemiT K1 and K3) and an
+  external site directory; `examples/site/` documents every format.
 
-### Changed
-- Configuration is split into core, packs (`packs/`) and an external site directory
-  (`BSP_SITE`); the repository no longer contains installation-specific data.
-- The command, package and services are named `bsp`, `bsp-hostd` and `bsp-*`.
-- `bsp-hostd` listens on `127.0.0.1` unless `server.bind` says otherwise.
-- The web console is in English.
-
-## [0.1.0b0]
-
-First public beta: board leases, remote SDK workspaces and builds, boot recipes (RAM boot and
-flash), board discovery, GPIO relay control with a web console, multi-host CLI, agent skills and
-the end-to-end acceptance test.
+[Unreleased]: https://github.com/rzbdz/remote-embedded-ai-workflow/compare/v0.1.0b0...HEAD
+[0.1.0b0]: https://github.com/rzbdz/remote-embedded-ai-workflow/releases/tag/v0.1.0b0

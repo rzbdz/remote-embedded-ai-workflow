@@ -192,14 +192,25 @@ def _attach(h: HostHandle, dut: str, args) -> tuple[Any, str]:
 
 
 def export(fleet: Fleet, args) -> tuple[Any, str]:
+    """Probed/bound boards in the site's duts/ format (one mapping per board)."""
     import yaml
+    from pathlib import Path
 
-    out = {}
+    specs = []
     for h, r in fleet.fan("dut_export"):
-        if r.get("ok"):
-            out[h.id] = r["result"]["duts"]
-    return out, yaml.safe_dump(out, sort_keys=False, allow_unicode=True)
-
+        if r.get("ok") and (not getattr(args, "host", None) or h.id == args.host):
+            specs += r["result"]["duts"]
+    if getattr(args, "dir", None):
+        d = Path(args.dir).expanduser()
+        d.mkdir(parents=True, exist_ok=True)
+        files = []
+        for spec in specs:
+            p = d / f"{spec['id']}.yaml"
+            p.write_text(yaml.safe_dump(spec, sort_keys=False, allow_unicode=True))
+            files.append(str(p))
+        return {"files": files}, "\n".join(f"wrote {f}" for f in files) or "no probed or bound boards to export"
+    text = "".join("---\n" + yaml.safe_dump(s, sort_keys=False, allow_unicode=True) for s in specs)
+    return specs, text or "# no probed or bound boards"
 
 def logins(fleet: Fleet, args) -> tuple[Any, str]:
     """`ssh <login>@<host>` lines for every DUT console login, across hosts."""
@@ -374,7 +385,9 @@ def add_parsers(sub) -> None:
     dl.add_argument("--soc", help="only this SoC (as named in the SoC profiles)")
     dl.add_argument("--sdk", help="only DUTs that can run this SDK")
     dl.add_argument("--free", action="store_true", help="only DUTs nobody leases")
-    ds.add_parser("export", help="all DUT specs as YAML, ready to save under <site>/duts/")
+    ex = ds.add_parser("export", help="registered DUT specs as YAML; --dir writes one <site>/duts/<id>.yaml per board")
+    ex.add_argument("--dir", help="write each board to DIR/<id>.yaml (e.g. $BSP_SITE/duts) instead of printing")
+    ex.add_argument("--host", help="only boards of this host")
     ds.add_parser("logins", help="ssh console logins: `ssh bsp-<dut>@<host>` opens a DUT console (no password)")
     for name, hlp in (("status", "stage, lease, fastboot, control lines, console tail"),
                       ("log", "recent console lines (passive)")):

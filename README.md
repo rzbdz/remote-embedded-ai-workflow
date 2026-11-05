@@ -54,10 +54,10 @@ actionable error message, also reachable over HTTP and as an AI tool.
   name.
 - **Reset and power control.** GPIO header lines act as open-drain "buttons" or relays, with
   aliases such as `board-1/reset`, a web pin map and pin-conflict checks.
-- **Serial consoles.** Persistent, logged consoles (via
-  [serial-mux](https://github.com/TroyMitchell911/serial-mux)) that survive USB-UART
-  re-enumeration. Run a command and get its output, attach interactively, or let people
-  open a board's console with `ssh bsp-<board>@<host>` (optional).
+- **Serial consoles.** Persistent, logged consoles that survive USB-UART re-enumeration, via
+  [serial-mux](https://github.com/TroyMitchell911/serial-mux) (a submodule: our fork with
+  USB-port-following reconnects). Run a command and get its output, attach interactively, or
+  let people open a board's console with `ssh bsp-<board>@<host>` (optional).
 - **Boards without wiring.** `bsp dut bind` turns a serial console and a USB port into a board
   slot in seconds. When it needs a reset, bsp asks a person and continues once they confirm or
   once the board shows up in download mode — useful for batch flashing and quick bring-up.
@@ -88,7 +88,7 @@ $ bsp dut boot example-board --sdk upstream-a           # RAM boot; --method dow
   ...
   [  44.3s] done in 42.8s
 $ bsp dut console example-board "dmesg | grep -i usb"
-$ bsp sdk exec upstream-a -- git commit -am "'usb: fix resume'"
+$ bsp sdk exec upstream-a -- git commit -am "'usb: fix resume'"   # inner quotes survive the remote shell
 $ bsp dut release example-board && bsp sdk release upstream-a
 ```
 
@@ -141,8 +141,8 @@ board pinouts) and your private **site** directory. See
 | Component | Supported | Notes |
 |---|---|---|
 | Boards (DUTs) | SoCs whose boot ROM offers a USB download mode reachable with `fastboot` | Boot steps are configuration, so other flows can be described without code |
-| SoC profiles shipped | SpacemiT K1, SpacemiT K3 (`packs/spacemit`) | Tested on a K1-x MUSE Card and a K3 deb1 board |
-| Board hosts | Linux with a GPIO header (sysfs or libgpiod), USB host ports, systemd | Pin maps shipped for the SpacemiT K3 Com260 and K1-x deb1; add yours as a YAML file |
+| SoC profiles shipped | SpacemiT K1, SpacemiT K3 (`packs/spacemit`) | Boards tested as DUTs: K1-x MUSE Card (K1), K3 deb1 (K3) |
+| Board hosts | Linux with a GPIO header (sysfs or libgpiod), USB host ports, systemd | Header pin maps shipped for two SpacemiT boards used as hosts: K3 Com260 and K1-x deb1; add yours as a YAML file |
 | Reset control | GPIO open-drain button or relay; a person, prompted by bsp (`human`) | A Home Assistant backend is a stub |
 | Consoles | Any USB-UART adapter, via serial-mux | |
 
@@ -163,21 +163,21 @@ export BSP_SITE=$PWD/examples/site
 .venv/bin/bsp-hostd -c examples/site/hosts/dev-mock.yaml --port 8765 &
 
 export BSP_URL=http://127.0.0.1:8765
-bin/bsp dut list                      # a mock board on the mock host
+bin/bsp dut list                      # two mock boards: mock-board (GPIO reset), mock-slot (manual reset)
 bin/bsp button click DUT1/reset       # "press" a reset button on the mock GPIO header
 bin/bsp sdk list                      # the example SDK catalog
 bin/bsp sdk plan bsp-a --boot load    # what a RAM boot of bsp-a would do
 ```
 
-Then open <http://127.0.0.1:8765> for the web console. The mock board can be leased and reset;
-booting it needs real hardware.
+Then open <http://127.0.0.1:8765> for the web console. The mock boards can be leased and reset
+with `bsp dut reset mock-board --no-fdl`; download mode and booting need real hardware.
 
 ## Requirements
 
 | Role | Needs |
 |---|---|
 | Client | Python ≥ 3.8 and PyYAML (run `bin/bsp` from a clone), or Python ≥ 3.10 for `pip install`; `ssh` |
-| Board host | Linux, Python ≥ 3.10, systemd, root access, `fastboot`, GPIO via sysfs or libgpiod, network access to PyPI during installation |
+| Board host | Linux, Python ≥ 3.10, systemd, root access, `fastboot`, GPIO via sysfs or libgpiod (plus the `libgpiod` system library for the latter), network access to PyPI during installation |
 | Build server | ssh access with a key, Python ≥ 3.6, git; `tmux` recommended |
 | Machine that deploys hosts | git, ssh, tar (and `sshpass` only for password logins) |
 
@@ -251,8 +251,9 @@ documented in [docs/configuration.md](docs/configuration.md) and
 A board host can reset and flash hardware, so treat its API like ssh access:
 
 - `bsp-hostd` listens on `127.0.0.1` unless the host configuration sets `server.bind`.
-- Set `server.auth_token` (or `BSP_TOKEN`) before exposing it on a network; clients pass it
-  with `--token` or `bsp remote add … --token`. Read-only endpoints stay open.
+- Set a token before exposing it on a network (`BSP_TOKEN` in `/etc/bsp/hostd.env` on the
+  host); clients pass it with `--token`, `BSP_TOKEN` or `bsp remote add … --token`. Read-only
+  requests, including console output, stay open.
 - Never publish a board host to the internet.
 - Prefer ssh keys for deployment and build-server access.
 
@@ -291,5 +292,6 @@ belongs in a pack versus a site.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE). The serial-mux submodule is distributed under its
-own license.
+Apache License 2.0 — see [LICENSE](LICENSE). The serial-mux submodule (a fork of
+[TroyMitchell911/serial-mux](https://github.com/TroyMitchell911/serial-mux)) is distributed under
+its own license.

@@ -20,28 +20,32 @@ How hosts are chosen without `-r`/`--url` is described in
 
 ## Boards: `bsp dut`
 
-| Command | Lease | Purpose |
-|---|---|---|
-| `bsp dut list [--sdk SDK] [--soc SOC] [--free]` | | Boards on all reachable hosts |
-| `bsp dut status DUT` | | Stage, lease, fastboot state, control lines, console tail |
-| `bsp dut log DUT [--lines N] [--grep RE]` | | Recent console lines, read passively |
-| `bsp dut acquire DUT [--holder NAME] [--purpose TEXT] [--ttl S]` | | Lease a board; the token is remembered |
-| `bsp dut release DUT [--force]` | ✓ | Release it |
-| `bsp dut reset DUT [--no-fdl]` | ✓ | Reset into download mode and wait for it (`--no-fdl`: plain reset) |
-| `bsp dut boot DUT --sdk SDK [--method load\|download] [--variant V] [--no-wait]` | ✓ | Run the SDK's boot recipe; streams progress, exit code is the result |
-| `bsp dut console DUT "CMD"` | ✓ | Run one shell command on the console and print its output |
-| `bsp dut console DUT` | | Attach interactively over ssh (Ctrl+] detaches) |
-| `bsp dut confirm DUT [NOTE]` | | Tell a waiting reset/boot that the requested manual action is done |
-| `bsp dut logins` | | `ssh` commands that open each board's console (if enabled on the host) |
-| `bsp dut bind NAME --console TTY\|ALIAS --usb USB [--soc SOC] [--host HOST]` | | Register a board from a console and a USB port; a person does the resets |
-| `bsp dut add HOST --spec JSON\|@FILE [--replace]` | | Register a board from a spec (what probe produces) |
-| `bsp dut set DUT [--board/--soc/--description/--sdks/--usb/--reset-pin/--pulse-ms/--fdl/--fdl-pin]` | ✓ | Edit a board |
-| `bsp dut rename OLD NEW [--console]` | ✓ | Rename a board (and its console alias with `--console`) |
-| `bsp dut remove DUT [--force]` | | Forget a board |
-| `bsp dut export` | | All boards as YAML, ready for `SITE/duts/` |
+| Command | Purpose |
+|---|---|
+| `bsp dut list [--sdk SDK] [--soc SOC] [--free]` | Boards on all reachable hosts |
+| `bsp dut status DUT` | Stage, lease, fastboot state, control lines, pending manual action, console tail |
+| `bsp dut log DUT [--lines N] [--grep RE]` | Recent console lines, read passively |
+| `bsp dut acquire DUT [--holder NAME] [--purpose TEXT] [--ttl S]` | Lease a board (default 3600 s, at most 24 h); the token is remembered |
+| `bsp dut release DUT [--force]` | Release it |
+| `bsp dut reset DUT [--no-fdl] [--no-wait] [--timeout S]` | Reset into download mode and wait for it (`--no-fdl`: plain reset) |
+| `bsp dut boot DUT --sdk SDK [--method load\|download] [--variant V] [--no-wait] [--timeout S]` | Run the SDK's boot recipe; streams progress, exit code is the result |
+| `bsp dut console DUT "CMD" [--expect RE] [--timeout S]` | Run one shell command on the console and print its output |
+| `bsp dut console DUT` | Attach interactively over ssh (Ctrl+] detaches) |
+| `bsp dut confirm DUT [NOTE]` | Tell a waiting reset/boot that the requested manual action is done |
+| `bsp dut logins` | `ssh` commands that open each board's console (if enabled on the host) |
+| `bsp dut bind NAME --console TTY\|ALIAS --usb USB [--soc SOC] [--board B] [--description D] [--sdks LIST] [--fdl strapped\|button] [--host HOST] [--replace]` | Register a board from a console and a USB port; a person does the resets |
+| `bsp dut add HOST --spec JSON\|@FILE [--replace]` | Register a board from a spec (what probe produces) |
+| `bsp dut set DUT [--board/--soc/--description/--sdks/--usb/--reset-pin/--pulse-ms/--fdl/--fdl-pin]` | Edit a board |
+| `bsp dut rename OLD NEW [--console]` | Rename a board (and its console alias with `--console`) |
+| `bsp dut remove DUT [--force]` | Forget a board |
+| `bsp dut export [--dir DIR] [--host HOST]` | Registered boards as YAML; `--dir` writes one `DIR/<id>.yaml` per board, the format of `SITE/duts/` |
 
-"Lease ✓" means the command needs your lease (the CLI passes the remembered token; use
-`--lease TOKEN` or `BSP_LEASE` in stateless mode).
+**Leases.** `reset`, `boot`, `console "CMD"` and `release` need your lease; `set` and `rename`
+need it while the board is leased. The CLI passes the remembered token; in stateless mode use
+`--lease TOKEN` or `BSP_LEASE`.
+
+**Editing boards.** `set`, `rename` and `remove` work on boards registered on the host (by
+`probe`, `bind` or `add`). Boards defined in `SITE/duts/` are edited in their file.
 
 ### Boards reset by a person
 
@@ -66,25 +70,33 @@ fails with a fastboot timeout. Scripts and agents should run such commands in th
 |---|---|
 | `bsp hosts` | Reachable hosts, how they are reached, their modules and boards |
 | `bsp init` | First-run check: configuration directory, mode, hosts |
-| `bsp probe [--pins P..] [--consoles C..] [--dry-run] [--yes] [--no-identify] [--replace]` | Discover boards (pulses GPIO lines — see [getting-started.md](getting-started.md#option-a-probe-boards-wired-to-gpio-reset-lines)) |
+| `bsp probe [--pins P..] [--consoles C..] [--sdks LIST] [--dry-run] [--yes] [--no-identify] [--replace]` | Discover boards (pulses GPIO lines — see [getting-started.md](getting-started.md#option-a-probe-boards-wired-to-gpio-reset-lines)) |
 | `bsp remote list\|show\|add\|remove\|use` | Manage personal host entries |
 | `bsp watch` | Stream live events from the host(s) |
-| `bsp tools` | Print the hosts' AI tool schemas |
+| `bsp tools` | Print the host's AI tool schemas in Anthropic format (OpenAI format: `GET /api/v1/tools?format=openai`) |
+| `bsp hints` | Hints from the configuration layers (packs, site) |
+| `bsp install [--dir DIR] [--offline]` | Write `SKILL.md` for agents working in an SDK tree (see [agents.md](agents.md)) |
 
 ## SDKs: `bsp sdk`
 
-| Command | Lease | Purpose |
-|---|---|---|
-| `bsp sdk list` | | SDK targets, their SoC, workspace and boot-method status |
-| `bsp sdk show SDK` | | Build server, path, dev repos, components, artifacts, sharing |
-| `bsp sdk status SDK` | | Lease, branches, uncommitted files, recent builds |
-| `bsp sdk plan SDK [COMPONENT] [--boot load\|download]` | | Dry run: the build command or the boot steps |
-| `bsp sdk acquire SDK --task NAME [--holder NAME]` | | Lease the workspace and switch to branch `bsp/NAME` |
-| `bsp sdk release SDK [--keep] [--force]` | ✓ | Restore the owner's branch and stashed work |
-| `bsp sdk build SDK COMPONENT [--clean]` | ✓ | Build on the server; streams warnings and errors |
-| `bsp sdk jobs SDK`, `bsp sdk job SDK ID [--follow] [--log]` | | Build jobs |
-| `bsp sdk exec SDK [--cwd DIR] [--read-only] -- CMD…` | ✓ | Run a command in the tree (cwd: first dev repo) |
-| `bsp sdk get SDK PATH [-o FILE]`, `bsp sdk put SDK PATH FILE` | `put` ✓ | Read or write a file in the tree |
+| Command | Purpose |
+|---|---|
+| `bsp sdk list [--soc SOC]` | SDK targets, their SoC, workspace and boot-method status |
+| `bsp sdk show SDK` | Build server, path, dev repos, components, artifacts, sharing |
+| `bsp sdk status SDK` | Lease, branches, uncommitted files, recent builds |
+| `bsp sdk plan SDK [COMPONENT] [--boot load\|download] [--variant V]` | Dry run: the build command or the boot steps |
+| `bsp sdk acquire SDK --task NAME [--holder NAME] [--ttl S] [--branch B] [--projects LIST]` | Lease the workspace (default 8 h) and switch to branch `bsp/NAME` |
+| `bsp sdk release SDK [--keep] [--force]` | Restore the owner's branch and stashed work |
+| `bsp sdk build SDK COMPONENT [--clean] [--no-wait] [-v] [--timeout S]` | Build on the server; streams warnings and errors |
+| `bsp sdk jobs SDK`, `bsp sdk job SDK ID [--follow] [--log]` | Build jobs |
+| `bsp sdk exec SDK [--cwd DIR] [--read-only] [--timeout S] -- CMD…` | Run a command in the tree (cwd: first dev repo) |
+| `bsp sdk get SDK PATH [-o FILE]`, `bsp sdk put SDK PATH FILE` | Read or write a file in the tree |
+
+Commands that change the tree (`build`, `exec`, `put`) are refused while someone else holds the
+workspace lease; hold it yourself while you work.
+
+`exec` joins its arguments and runs them with `bash -c` on the build server, so quote once more
+for words that must stay together: `bsp sdk exec SDK -- git commit -am "'usb: fix resume'"`.
 
 See [sdk.md](sdk.md) for what acquire and release do to the tree.
 

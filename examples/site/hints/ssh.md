@@ -1,2 +1,3 @@
-- If the user asks you to ssh to a machine and gives no credentials, try user `root` with this
-  site's default password first (write the real value in your site's hints, never in the bsp repo).
+- Lab machines accept the team's ssh key (`~/.ssh/lab_ed25519`). If a login fails, ask the user
+  for access instead of guessing credentials.
+- Boards on shelf 2 are shared with the test team: release leases as soon as you are done.

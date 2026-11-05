@@ -3,7 +3,7 @@
 Client-side groups:
     bsp hosts | init                    which board hosts are reachable (local or remote mode)
     bsp probe                           discover boards on the host(s) and register them
-    bsp dut list|status|log|acquire|release|reset|boot|console|add|remove|rename|set|export
+    bsp dut list|status|log|acquire|release|reset|boot|console|confirm|bind|logins|add|remove|rename|set|export
                                         boards, routed to whichever host owns them
     bsp sdk list|show|status|plan|acquire|release|build|job|jobs|exec|get|put
                                         SDK targets on build servers (lease, task branch, build)
@@ -124,7 +124,7 @@ def _global_parser() -> argparse.ArgumentParser:
     g = argparse.ArgumentParser(add_help=False)
     g.add_argument("-r", "--remote")
     g.add_argument("--url")
-    g.add_argument("--token")
+    g.add_argument("--token", default=os.environ.get("BSP_TOKEN"))
     g.add_argument("--json", action="store_true")
     g.add_argument("--stateless", action="store_true")
     return g

@@ -48,8 +48,9 @@
   输出识别 SoC，并给出命名建议。
 - **复位与电源控制。** 排针 GPIO 可作为开漏"按键"或继电器使用，支持 `board-1/reset` 这样的别名、
   网页引脚图和引脚复用冲突检查。
-- **串口控制台。** 基于 [serial-mux](https://github.com/TroyMitchell911/serial-mux) 的常驻、带日志的
-  控制台，USB 转串口重新枚举后仍可继续使用。可以执行单条命令取回输出、交互式接入，也可以（可选）让人
+- **串口控制台。** 常驻、带日志的控制台，USB 转串口重新枚举后仍可继续使用。基于
+  [serial-mux](https://github.com/TroyMitchell911/serial-mux)（以子模块形式包含：我们的分支，增加了按 USB
+  端口自动重连，分支 `bsp/usb-port-reconnect`）。可以执行单条命令取回输出、交互式接入，也可以（可选）让人
   直接用 `ssh bsp-<板名>@<主机>` 打开某块板子的串口。
 - **免接线的板子。** `bsp dut bind` 只用一个串口和一个 USB 端口即可登记一块板子。需要复位时，bsp 会请人
   按复位键，在对方确认或检测到板子进入下载模式后自动继续，适合批量烧写和快速联调。
@@ -79,7 +80,7 @@ $ bsp dut boot example-board --sdk upstream-a           # 内存启动；--metho
   ...
   [  44.3s] done in 42.8s
 $ bsp dut console example-board "dmesg | grep -i usb"
-$ bsp sdk exec upstream-a -- git commit -am "'usb: fix resume'"
+$ bsp sdk exec upstream-a -- git commit -am "'usb: fix resume'"   # 内层引号用于远程 shell
 $ bsp dut release example-board && bsp sdk release upstream-a
 ```
 
@@ -110,7 +111,7 @@ flowchart TB
   cli -- "ssh" --> tree
   cli -- "HTTP，或经 ssh 隧道的 HTTP" --> hostd
   hostd -- "拉取编译产物（ssh）" --> tree
-  hostd -- "GPIO：复位 / 下载模式按键" --> dut
+  hostd -- "GPIO：复位 / 下载模式控制线" --> dut
   hostd -- "USB：fastboot" --> dut
   hostd -- "UART：串口控制台" --> dut
 ```
@@ -128,8 +129,8 @@ flowchart TB
 | 组件 | 支持范围 | 说明 |
 |---|---|---|
 | 开发板（DUT） | BootROM 提供可用 `fastboot` 访问的 USB 下载模式的 SoC | 启动步骤是配置，其他流程无需写代码即可描述 |
-| 自带的 SoC 配置 | SpacemiT K1、SpacemiT K3（`packs/spacemit`） | 已在 K1-x MUSE Card 和 K3 deb1 开发板上验证 |
-| 板控主机 | 带 GPIO 排针（sysfs 或 libgpiod）、USB 主机口和 systemd 的 Linux | 自带 SpacemiT K3 Com260 和 K1-x deb1 的引脚定义；其他主机加一个 YAML 文件即可 |
+| 自带的 SoC 配置 | SpacemiT K1、SpacemiT K3（`packs/spacemit`） | 已验证的被测板：K1-x MUSE Card（K1）、K3 deb1（K3） |
+| 板控主机 | 带 GPIO 排针（sysfs 或 libgpiod）、USB 主机口和 systemd 的 Linux | 自带两款用作板控主机的 SpacemiT 板卡的排针定义：K3 Com260 和 K1-x deb1；其他主机加一个 YAML 文件即可 |
 | 复位控制 | GPIO 开漏按键或继电器；由 bsp 提示人工操作（`human`） | Home Assistant 后端尚为占位实现 |
 | 控制台 | 任意 USB 转串口，经由 serial-mux | |
 
@@ -149,20 +150,21 @@ export BSP_SITE=$PWD/examples/site
 .venv/bin/bsp-hostd -c examples/site/hosts/dev-mock.yaml --port 8765 &
 
 export BSP_URL=http://127.0.0.1:8765
-bin/bsp dut list                      # 模拟主机上的模拟板子
+bin/bsp dut list                      # 两块模拟板子：mock-board（GPIO 复位）、mock-slot（人工复位）
 bin/bsp button click DUT1/reset       # 在模拟排针上"按下"复位键
 bin/bsp sdk list                      # 示例 SDK 目录
 bin/bsp sdk plan bsp-a --boot load    # bsp-a 内存启动会执行的步骤
 ```
 
-然后打开 <http://127.0.0.1:8765> 查看 Web 控制台。模拟板子可以租用和复位，启动则需要真实硬件。
+然后打开 <http://127.0.0.1:8765> 查看 Web 控制台。模拟板子可以租用，并用 `bsp dut reset mock-board --no-fdl`
+复位；进入下载模式和启动需要真实硬件。
 
 ## 环境要求
 
 | 角色 | 需要 |
 |---|---|
 | 客户端 | Python ≥ 3.8 和 PyYAML（从源码目录运行 `bin/bsp`），或 Python ≥ 3.10（`pip install`）；`ssh` |
-| 板控主机 | Linux、Python ≥ 3.10、systemd、root 权限、`fastboot`、sysfs 或 libgpiod 形式的 GPIO，安装时可访问 PyPI |
+| 板控主机 | Linux、Python ≥ 3.10、systemd、root 权限、`fastboot`、sysfs 或 libgpiod 形式的 GPIO（后者还需系统库 `libgpiod`），安装时可访问 PyPI |
 | 编译服务器 | 基于密钥的 ssh 访问、Python ≥ 3.6、git；建议安装 `tmux` |
 | 执行部署的机器 | git、ssh、tar（仅密码登录时需要 `sshpass`） |
 
@@ -193,8 +195,8 @@ bsp 的设计目标是让 agent 只靠 CLI 就能完成全部工作：
 
 - `deploy/install-skills.sh` 为 Claude Code、opencode 和 Hermes 安装自带的 skill（`skills/bsp-dev-loop`、
   `skills/bsp-gpio-relay`）。
-- 在 SDK 源码树中运行 `bsp install`，会生成 `SKILL.md`：在完整 skill 之前加上本目录对应哪个 SDK、哪些板子能
-  运行它，以及 site 中的提示。
+- 在 SDK 源码树中运行 `bsp install` 生成 `SKILL.md`：在完整 skill 的基础上，补充说明本目录是哪个 SDK、
+  哪些板子能运行它，以及 site 中的提示。
 - `--json` 输出 `{"ok": true, "result": …}` 或 `{"ok": false, "error": {"code", "message", "hint",
   "details"}}`；`--stateless` 配合显式的租约令牌可让多个 agent 并行工作。
 - 每台板控主机提供 `/llms.txt`，并在 `/api/v1/tools` 提供 Anthropic 和 OpenAI 格式的 tool 定义。
@@ -230,14 +232,16 @@ Web 控制台目前覆盖 GPIO 排针（引脚图、引脚详情、事件、API 
 板控主机可以复位和烧写硬件，应像对待 ssh 权限一样对待它的 API：
 
 - 除非主机配置设置了 `server.bind`，`bsp-hostd` 只监听 `127.0.0.1`。
-- 在网络上开放之前设置 `server.auth_token`（或 `BSP_TOKEN`）；客户端通过 `--token` 或
-  `bsp remote add … --token` 传入。只读接口保持开放。
+- 在网络上开放之前设置令牌（主机上 `/etc/bsp/hostd.env` 中的 `BSP_TOKEN`）；客户端通过 `--token`、
+  `BSP_TOKEN` 或 `bsp remote add … --token` 传入。只读请求（包括串口输出）保持开放。
 - 不要把板控主机暴露到公网。
 - 部署和访问编译服务器优先使用 ssh 密钥。
 
 威胁模型和漏洞报告方式见 [SECURITY.md](SECURITY.md)。
 
 ## 文档
+
+以下文档目前仅有英文版：
 
 | 文档 | 内容 |
 |---|---|
@@ -252,7 +256,6 @@ Web 控制台目前覆盖 GPIO 排针（引脚图、引脚详情、事件、API 
 | [架构](docs/architecture.md) | 概念、分层、扩展点 |
 | [Hook](hooks/README.md) | hook 接口约定 |
 
-详细文档目前为英文。
 
 ## 项目状态
 
@@ -269,4 +272,5 @@ pack 与 site 的边界，见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 许可证
 
-Apache License 2.0，见 [LICENSE](LICENSE)。serial-mux 子模块按其自身的许可证发布。
+Apache License 2.0，见 [LICENSE](LICENSE)。serial-mux 子模块（基于
+[TroyMitchell911/serial-mux](https://github.com/TroyMitchell911/serial-mux) 的分支）按其自身的许可证发布。

@@ -30,7 +30,10 @@ else
   git ls-files -z | tar --null -czf - -T - | ssh -o BatchMode=yes "$TARGET" "$INSTALL"
 fi
 if [[ -n $SITE ]]; then
-  SITE_INSTALL='set -e; mkdir -p ~/.config/bsp; rm -rf ~/.config/bsp/site.new; mkdir ~/.config/bsp/site.new;
+  # never replace a site that is a symlink or a git checkout: that would drop its history
+  SITE_INSTALL='set -e; T=~/.config/bsp/site
+    if [ -L "$T" ] || [ -d "$T/.git" ]; then echo "refusing to replace $T: it is a symlink or git checkout (update it with git, or point BSP_SITE at it)" >&2; exit 1; fi
+    mkdir -p ~/.config/bsp; rm -rf ~/.config/bsp/site.new; mkdir ~/.config/bsp/site.new;
     tar -xzf - -C ~/.config/bsp/site.new; rm -rf ~/.config/bsp/site; mv ~/.config/bsp/site.new ~/.config/bsp/site;
     echo "site installed in ~/.config/bsp/site"'
   EXCL=(--exclude=.git); [[ -f $SITE/.bspignore ]] && EXCL+=(--exclude-from="$SITE/.bspignore")

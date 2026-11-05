@@ -44,10 +44,11 @@ Then write boot recipes for the SDKs of that SoC ([sdk.md](sdk.md)).
 
 Describe its GPIO header in `boards/<id>.yaml`: one entry per header with its pins — a GPIO pin
 gives its Linux GPIO number (`gpio: 83`), other pins a `kind` (`power`, `gnd`) and `label` —
-plus optional alternate-function labels and where the kernel's pin-mux information lives. See `examples/site/boards/example-40pin.yaml` and the files in
-`packs/spacemit/boards/`. Select it with `modules.gpio_relay.board` in the host configuration.
+plus optional alternate-function labels and where the kernel's pin-mux information lives. See
+`examples/site/boards/example-40pin.yaml` and the files in `packs/spacemit/boards/`. Select it
+with `modules.gpio_relay.board` in the host configuration.
 
-GPIO access goes through a backend: `sysfs`, `gpiod` (install the `gpiod` extra) or `mock`. A new
+GPIO access goes through a backend: `sysfs`, `gpiod` (installed automatically by `deploy.sh`) or `mock`. A new
 backend implements the `GpioBackend` interface in `src/bsp/gpio_relay/backends/` and registers
 itself.
 

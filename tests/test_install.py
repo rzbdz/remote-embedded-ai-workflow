@@ -61,5 +61,5 @@ def test_hints_come_from_configuration(tmp_path):
     assert ("site/ssh", (ROOT / "examples/site/hints/ssh.md").read_text().strip()) in found
     cat = SdkCatalog(ROOT / "examples" / "site" / "sdk")
     text = Path(install.install(tmp_path, cat, None, "bsp", found)["file"]).read_text()
-    assert "## Hints from this installation's configuration" in text and "user `root`" in text
-    assert text.index("user `root`") < text.index("Below: the full bsp skill")
+    assert "## Hints from this installation's configuration" in text and "team's ssh key" in text
+    assert text.index("team's ssh key") < text.index("Below: the full bsp skill")

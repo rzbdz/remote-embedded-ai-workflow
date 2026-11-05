@@ -16,4 +16,3 @@ artifacts:
 dev_projects: [linux]          # repos inside the tree that `sdk acquire` stashes + branches
 env: {path_prepend: []}
 console: {prompt: "# $"}       # shell prompt after boot (console command completion)
-known_traps: []

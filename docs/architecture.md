@@ -59,116 +59,90 @@ flowchart LR
 
 ## Configuration layers
 
-`src/bsp/core/site.py` defines the layers, merged lowest first (later wins per file / key):
-
-| layer | what | where |
-|---|---|---|
-| core | mechanism, abstract concepts, generic hooks (`hooks/`), `examples/site/` | this repo |
-| packs | public hardware knowledge: SoC profiles, purchasable board pin maps, hooks for public tool formats | `packs/<name>/`, selected by `<site>/bsp.yaml` `packs:` (default: all) |
-| site | private: hosts, deploy targets, build servers, SDK layouts, boot/flash recipes, probe images, DUTs, hints | `$BSP_SITE`, `~/.config/bsp/site`, `/etc/bsp/site` |
+Configuration is merged from the core, the selected packs and the site, in that order
+(`src/bsp/core/site.py`). Code never refers to a vendor or an installation; it asks for the
+merged view of a kind of data (`layered("socs")`, `layered("sdk")`, …). The layers and their file
+formats are described in [configuration.md](configuration.md).
 
 ```mermaid
 flowchart LR
   core["Core<br/>this repository"] -- "overridden by" --> packs["Packs<br/>packs/NAME"] -- "overridden by" --> site["Site<br/>BSP_SITE"]
 ```
 
-Each layer may contribute `boards/`, `socs/`, `hooks/`, `sdk/{families,servers,workspaces,instances}/`,
-`duts/`, `hints/`. Consumers ask for `layered(kind)` and never hard-code a vendor. A
-"distribution" (e.g. an upstream-kernel loop for one SoC family) is a further layer of the
-same shape: a curated pack set plus recipe templates a site can start from.
+The same mechanism allows further layers between packs and sites — for example a curated set of
+packs and recipe templates for one SoC family's upstream kernel work.
 
-Rule of thumb: if anyone who buys the hardware sees the same thing (boot-ROM output, header
-pin map, a vendor's documented image format), it may go in a pack. If it describes *your*
-machines, trees, accounts or procedures, it is site configuration.
+## Resources
 
-## Resources and identities
-
-| resource | identity | where defined | owned by |
+| Resource | Identified by | Defined in | Exclusive access |
 |---|---|---|---|
-| build server | id (ssh user@host, job env) | `<site>/sdk/servers/` | — |
-| SDK family | how to build (make / envsetup / script) + artifact roles | `<site>/sdk/families/` | — |
-| workspace | one checkout on one server — **unit of mutual exclusion** | `<site>/sdk/workspaces/` (or implicit per instance) | lease, task branch, build lock, jobs in `<path>/.bsp/` |
-| SDK instance (target) | workspace + family + SoC + artifacts + boot recipes | `<site>/sdk/instances/` | via its workspace |
-| SoC profile | boot-ROM fingerprint, download mode, USB ids, identify sequence, probe images | `socs/<soc>/soc.yaml` in packs / site (deep-merged) | — |
-| board host | id (bsp-hostd) | `<site>/hosts/<id>.yaml`, `<site>/remotes.json` | — |
-| DUT | host + SoC + control + usb + console (+ sdks; default = all SDKs of its SoC) | probed → host state, or `<site>/duts/` | lease in host state |
-| reset / FDL line | alias `<dut>/reset`, `<dut>/fdl` on gpio-relay | registered by the dut module | — |
-| console | serial-mux alias, run as systemd unit `bsp-console-<alias>` | serial-mux (`third_party/serial-mux`) | — |
-| artifacts | sha256 | host cache `<state_dir>/dut/artifacts/<sha>/` | — |
+| Build server | id (ssh login, job environment) | `SITE/sdk/servers/` | — |
+| Family | build style and artifact roles | `SITE/sdk/families/` | — |
+| Workspace | one checkout on one server | `SITE/sdk/workspaces/`, or implicit per target | Workspace lease, build lock, jobs in `TREE/.bsp/` |
+| SDK target | workspace + family + SoC + artifacts + boot recipes | `SITE/sdk/instances/` | Through its workspace |
+| SoC profile | SoC id | `socs/<soc>/soc.yaml` in packs and the site (deep-merged) | — |
+| Board host | host id | `SITE/hosts/`, `SITE/remotes.json` | — |
+| DUT | DUT id: host, SoC, control backend, USB path, console | Registered on the host (`probe`, `bind`, `add`) or `SITE/duts/` | DUT lease on its host |
+| Reset / download-mode line | aliases `<dut>/reset`, `<dut>/fdl` | Registered by the dut module with gpio_relay | Through the DUT |
+| Console | serial-mux alias, systemd unit `bsp-console-<alias>` | serial-mux on the host | Through the DUT (writes) |
+| Build artifact | SHA-256 | Host cache `STATE_DIR/dut/artifacts/` | — |
 
-Aliases make calls pass straight through: `bsp dut reset <dut>` → dut module → control
-backend → gpio-relay `button click <dut>/reset` → header pin.
+Aliases let commands pass straight through the layers: `bsp dut reset board-1` reaches the dut
+module, its control backend calls `button click board-1/reset`, and gpio_relay resolves that to
+a header pin.
 
 ## SoC profiles
 
-`socs/<soc>/soc.yaml` (all keys optional, deep-merged across layers):
+A SoC profile tells bsp how to recognise the SoC and its download mode, and how to identify a
+board during probing; [porting.md](porting.md#a-new-soc) documents every key. Probe uses
+`fingerprint` to name the SoC and the generic `hooks/probe/identify` hook to run the `identify`
+sequence. `enter-fdl` steps and the human reset backend use `download_mode`, unless a DUT
+overrides it with `control.fdl.expect`.
 
-```yaml
-soc: soc-a
-fingerprint: [regex, ...]            # boot-ROM console lines after a reset; probe picks the best match
-download_mode: {console: regex, fastboot: regex}   # how to tell the board waits for images
-usb_vids: ["xxxx"]                   # probe narrows USB enumeration to these
-images: {key: {file: name, sha256: ...}}           # resolved to the highest layer holding the file
-identify:
-  sequence: [{stage: key, console: regex, fastboot: regex}, ...]   # stage image, continue, wait
-  fields: {name: regex}              # extracted from the console after the sequence (mem_gib/mem_mb -> mem)
-  placeholders: {field: [value, ...]}   # values that mean "not programmed"
-  name: [field, ...]                 # joined into the name hint for the probed board
-```
+## Extension points
 
-Probe uses `fingerprint` to name the SoC, `download_mode` to know when a reset landed in
-download mode, and the generic `hooks/probe/identify` to run `identify`. Boot uses
-`download_mode` when a DUT has no explicit `control.fdl.expect`.
-
-## Design patterns / extension points
-
-| what to change | how | interface |
+| To add | Do this | Interface |
 |---|---|---|
-| add a board host | `<site>/hosts/<id>.yaml` + `<site>/deploy/<id>.env` + `remotes.json`, `deploy/deploy.sh <id>` | host config |
-| add a board (DUT) | plug it in, `bsp probe` | `dut.add` JSON spec |
-| new SoC | `socs/<soc>/soc.yaml` in a pack; probe images in the site | SoC profile |
-| probe mechanism | replace `hooks/probe/{consoles,usb-devices,identify}` (any language) | JSON stdin → last-line JSON stdout, exit 0/2/other |
-| reset/FDL mechanism | `ControlBackend` subclass, `@CONTROL_BACKENDS.register` (gpio-relay, human, home-assistant stub) | `reset(log, ready)`, `enter_fdl(log, ready)`, `setup()` |
-| boot / flash procedure | recipe steps in the SDK instance (`boot.load`, `boot.download`); a `hook` step calls `hooks/flash/<name>` | step kinds in `sdk/catalog.py` |
-| new SDK | `<site>/sdk/instances/<id>.yaml` (+ family if the build style is new) | YAML |
-| new build style | family `build.runner` (`make`, `envsetup`, `script`) in `Instance.build_command` | runner |
-| GPIO hardware | `GpioBackend` strategy (sysfs, gpiod, mock) behind `GuardedBackend` | `set_output/set_input/status/free` |
-| transport to hosts | `HttpTransport` / `SshTransport` chain per remote | `request()`, `stream()` |
-| agent knowledge | `hints/*.md` in a pack or the site; `bsp hints`, `bsp install` | free text |
-| new host feature | a `Module` with `CommandSpec`s → REST + CLI + AI tools + web console | `core/module.py` |
+| A board host | `SITE/hosts/<id>.yaml`, `SITE/deploy/<id>.env`, an entry in `remotes.json`; `deploy/deploy.sh <id>` | Host configuration |
+| A board | `bsp probe`, `bsp dut bind`, or a file in `SITE/duts/` | DUT spec |
+| A SoC | `socs/<soc>/soc.yaml` in a pack; probe images in the site | SoC profile |
+| A probe mechanism | Replace `hooks/probe/{consoles,usb-devices,identify}` | JSON hook contract |
+| A reset mechanism | Subclass `ControlBackend`, register with `@CONTROL_BACKENDS.register` | `reset(log, ready)`, `enter_fdl(log, ready)`, `setup()` |
+| A boot or flash procedure | Recipe steps in the SDK target; `hook` steps call `hooks/flash/<name>` | [Step reference](sdk.md#boot-recipe-steps) |
+| An SDK | `SITE/sdk/instances/<id>.yaml`, plus a family for a new build style | YAML |
+| A build style | A runner in `Instance.build_command` (`make`, `envsetup`, `script` exist) | Runner |
+| GPIO hardware | A `GpioBackend` (sysfs, gpiod and mock exist), wrapped by `GuardedBackend` | `set_output`, `set_input`, `status`, `free` |
+| A transport to hosts | A transport in the remote's chain (`HttpTransport`, `SshTransport` exist) | `request()`, `stream()` |
+| Agent knowledge | `hints/*.md` in a pack or the site | Free text |
+| A host feature | A `Module` that publishes `CommandSpec`s: REST, CLI, AI tools and web console follow | `core/module.py` |
 
-Other patterns: Registry/plugin (`core/registry.py`), Command (`core/cmdspec.py`),
-Facade (services), State (channel modes), Observer (event bus → SSE), background Jobs
-(`core/jobs.py`) for long operations with progress lines, Leases for shared resources.
+Long operations (boots, probes, human-assisted resets) run as background jobs
+(`core/jobs.py`) that report progress lines; changes are published on an event bus that feeds
+`bsp watch` and the web console.
 
-## Shared trees: workspace vs SDK target
+## Shared source trees
 
-One source tree can build several targets (an upstream kernel tree building for two SoCs).
-Exclusion must follow the tree, not the target name, so:
+One source tree can build several targets, such as an upstream kernel tree built for two SoCs.
+Mutual exclusion therefore follows the tree, not the target: a **workspace** is the tree, and its
+lease, task branch, build lock and job list live in `TREE/.bsp/`. An **SDK target** is a build
+configuration within a workspace. Acquiring any target leases the whole workspace; the holder can
+then build and boot every target in it, and everyone else gets a conflict naming the holder,
+task and target. A target without `workspace:` owns an implicit workspace.
 
-- a **workspace** is the tree (server + path + dev repos); its lease, task branch, build
-  lock and job list live in `<path>/.bsp/`;
-- an **SDK instance** is a *target* in a workspace: build command, artifacts dir, SoC and
-  boot recipes. Acquiring any target leases the workspace; the same holder can then
-  build/boot the other targets too, everybody else gets a conflict naming the holder, task
-  and target. Instances without `workspace:` own an implicit one.
+## Concurrency
 
-## Multi-instance model
-
-- **many hosts**: the CLI fleet = all reachable hosts (remote mode) or just the local one
-  (host mode); `dut` commands are routed to the owning host; `probe`/`dut list` fan out.
-- **many DUTs per host**: every DUT has its own USB path (`fastboot -s usb:X`), serial-mux
-  alias and reset alias; leases and a per-DUT busy guard serialize access.
-- **many SDKs / SoCs**: each workspace has its own lease, task branch, build lock and job
-  dir; different workspaces build in parallel. Boot checks SoC compatibility; probe detects
-  the SoC from the boot-ROM log.
-- **many users/agents**: leases (DUT and SDK) with tokens; `--stateless` + explicit tokens
-  for parallel agents on one machine.
+- **Hosts.** The CLI talks to every reachable host, or only to the local one when it runs on a
+  board host. Board commands are routed to the host that owns the board; `probe` and `dut list`
+  query all hosts in parallel.
+- **Boards.** Each board has its own USB path, console and reset alias. Leases and a per-board
+  busy guard serialise access.
+- **SDKs.** Each workspace has its own lease, branch, build lock and jobs, so different
+  workspaces build in parallel. Boot refuses SDK targets built for a different SoC.
+- **People and agents.** DUT and workspace leases carry tokens; `--stateless` with explicit
+  tokens lets several agents share one machine and user account.
 
 ## Errors
 
-Every failure is `{code, message, hint, details}`; `hint` is the next step (did-you-mean,
-who holds a lease, which command to run), `details` carries machine-readable context
-(console tail, build log tail, candidates). CLI exit codes: 0 ok, 1 failed, 2 usage, 3 unreachable.
-
-Hardware quirks belong to the pack that knows the hardware (e.g. `packs/spacemit/README.md`).
+Every failure has a `code`, a `message`, a `hint` naming the next step, and machine-readable
+`details`; see [cli.md](cli.md#output-and-errors). Hardware quirks are documented by the pack
+that knows the hardware (for example `packs/spacemit/README.md`).

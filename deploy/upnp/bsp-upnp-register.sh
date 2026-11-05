@@ -1,11 +1,12 @@
 #!/bin/bash
-# Register router port mappings for bsp services via UPnP IGD (same mechanism
-# as the host's existing upnp-ssh-register.sh). Ports from /etc/bsp/upnp.env.
+# Register router port mappings for bsp services via UPnP IGD (needs `upnpc` from
+# miniupnpc). Ports from /etc/bsp/upnp.env: UPNP_PORTS, optional UPNP_ROUTE_PROBE (an
+# address used only to find the outgoing interface; default 192.0.2.1, never contacted).
 set -u
 # shellcheck disable=SC1091
 source /etc/bsp/upnp.env
 LOG=/var/log/bsp-upnp.log
-LOCAL_IP=$(ip route get 8.8.8.8 2>/dev/null | grep -oP 'src \K\S+')
+LOCAL_IP=$(ip route get "${UPNP_ROUTE_PROBE:-192.0.2.1}" 2>/dev/null | grep -oP 'src \K\S+')
 if [ -z "$LOCAL_IP" ]; then
   echo "[$(date)] ERROR: could not determine local IP" >> "$LOG"
   exit 1
