@@ -136,3 +136,57 @@ def test_announcer_body_and_status(tmp_path):
     cfg = _config(tmp_path, REGISTRY.replace("server: {state_dir: state}",
                                              "server: {state_dir: state, announce: http://192.0.2.1:9}"))
     assert cfg.announce == {"url": "http://192.0.2.1:9"}
+
+
+def test_port_watcher_reports_cables_coming_and_going(tmp_path):
+    from bsp.dut.ports import PortWatcher, snapshot
+
+    dev, usb = tmp_path / "dev", tmp_path / "usb"
+    dev.mkdir()
+    usb.mkdir()
+    (dev / "ttyUSB0").touch()
+    probe = lambda: snapshot((str(dev / "ttyUSB*"),), str(usb))
+    changes = []
+    w = PortWatcher(lambda change, now: changes.append(change), probe=probe)
+    assert w.current == {"tty": [str(dev / "ttyUSB0")], "usb": []} and w.check() is None
+    (dev / "ttyUSB3").touch()
+    port = usb / "2-1.3"
+    port.mkdir()
+    (port / "idVendor").write_text("361c\n")
+    (port / "idProduct").write_text("1001\n")
+    (usb / "2-1.3:1.0").mkdir()                     # an interface, not a device
+    assert w.check() == {"added": {"tty": [str(dev / "ttyUSB3")], "usb": ["usb:2-1.3 361c:1001"]},
+                         "removed": {"tty": [], "usb": []}}
+    (dev / "ttyUSB0").unlink()
+    assert w.check()["removed"]["tty"] == [str(dev / "ttyUSB0")]
+    assert len(changes) == 2
+
+
+def test_registry_publishes_port_changes(registry):
+    body = {"host": "lab-2", "port": 8765, "ports": {"tty": ["/dev/ttyUSB0"], "usb": []}}
+    registry.post("/api/v1/registry/announce", json=body)
+    registry.post("/api/v1/registry/announce", json={**body, "ports": {"tty": ["/dev/ttyUSB0", "/dev/ttyUSB3"],
+                                                                         "usb": ["usb:2-1.3 361c:1001"]}})
+    events = [e for e in registry.get("/api/v1/events/recent?limit=50").json()["result"] if e["topic"] == "registry.ports"]
+    assert [e["data"] for e in events] == [{"host": "lab-2", "added": {"tty": ["/dev/ttyUSB3"], "usb": ["usb:2-1.3 361c:1001"]},
+                                            "removed": {"tty": [], "usb": []}}]
+    assert registry.get("/api/v1/registry/list").json()["result"][0]["ports"]["tty"] == ["/dev/ttyUSB0", "/dev/ttyUSB3"]
+
+
+def test_announcer_is_poked_by_port_changes():
+    import threading
+
+    from bsp.core.events import EventBus
+    from bsp.server.announce import Announcer
+
+    sent = threading.Event()
+    a = Announcer({"url": "http://192.0.2.1:9", "interval_s": 3600}, lambda: {"host": "h"})
+    a.once = lambda: sent.set() or {"ok": True}
+    bus = EventBus()
+    bus.on("dut.ports", lambda ev: a.poke())
+    a.start()
+    assert sent.wait(2)                       # the first announcement
+    sent.clear()
+    bus.publish("dut.ports", added={"tty": ["/dev/ttyUSB3"]})
+    assert sent.wait(2)                       # at once, not an hour later
+    a.stop()

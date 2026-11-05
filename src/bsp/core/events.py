@@ -28,6 +28,11 @@ class EventBus:
         self._seq = itertools.count(1)
         self._history: deque[Event] = deque(maxlen=history)
         self._subscribers: set[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = set()
+        self._listeners: list[tuple[str, Any]] = []
+
+    def on(self, topic: str, fn) -> None:
+        """Call `fn(event)` in the publishing thread for every event whose topic is `topic` (or starts with `topic.`)."""
+        self._listeners.append((topic, fn))
 
     def publish(self, topic: str, **data: Any) -> Event:
         with self._lock:
@@ -40,6 +45,12 @@ class EventBus:
             except RuntimeError:  # loop closed
                 with self._lock:
                     self._subscribers.discard((loop, q))
+        for prefix, fn in list(self._listeners):
+            if topic == prefix or topic.startswith(prefix + "."):
+                try:
+                    fn(ev)
+                except Exception:  # noqa: BLE001 - a listener must not break publishing
+                    pass
         return ev
 
     def recent(self, limit: int = 100, since: int = 0) -> list[Event]:

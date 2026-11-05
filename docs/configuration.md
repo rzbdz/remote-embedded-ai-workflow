@@ -134,6 +134,12 @@ server:
     token: null           # the registry's API token, if it has one (or $BSP_REGISTRY_TOKEN)
 ```
 
+Each host also watches for serial devices (`/dev/ttyUSB*`, `/dev/ttyACM*`) and USB devices
+coming and going (`modules.dut.watch_ports`, on by default; `{interval_s: 2}` sets how often it
+looks, `false` turns it off). A change is published on the host as `dut.ports` and announced to
+the registry at once with the host's current ports, and the registry publishes `registry.ports`
+with what was added and removed, so a newly cabled board is noticed within seconds.
+
 The registry records the address each announcement came from and offers it first, so a host
 behind NAT is reached at the address others see. `$BSP_REGISTRY_URL` sets `announce.url` from
 the environment. `bsp status` on the host shows the last announcement; on the registry, `bsp

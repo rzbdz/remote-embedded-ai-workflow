@@ -231,15 +231,27 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---------------- passthrough to host commands ----------------
     if rest[0] in ("watch", "tools") and any(a in ("-h", "--help") for a in rest[1:]):
-        print({"watch": "usage: bsp [-r HOST] watch\n\nStream live events (GPIO changes, leases, boots, jobs) from the host(s) until Ctrl-C.",
+        print({"watch": "usage: bsp [-r HOST] watch [--registry]\n\nStream live events (GPIO changes, leases, boots, jobs, "
+                        "cables coming and going) from the host(s) until Ctrl-C.\n  --registry  the registry's events instead: "
+                        "hosts announcing themselves and their ports changing (registry.ports)\n"
+                        "With --json each event is one JSON line with its host.",
                "tools": "usage: bsp [-r HOST] tools\n\nPrint the host's AI tool schemas (Anthropic format) as JSON."}[rest[0]])
         return EXIT_OK
+    if rest[0] == "watch" and "--registry" in rest[1:]:
+        if not store.registry_url:
+            return _fail(g, {"code": "config", "message": "no registry configured",
+                             "hint": "set \"registry\" in the site's remotes.json, or BSP_REGISTRY"}, EXIT_USAGE)
+        try:
+            reg = connect(Remote("registry", store.registry_url, g.token, source="registry"))
+        except Unreachable as u:
+            return _fail(g, {"code": "unreachable", "message": f"registry {store.registry_url}: {u.reason}"}, EXIT_UNREACHABLE)
+        return _watch([reg], g.json)
     try:
         hosts = fleet.require()
     except RemoteError as e:
         return _fail(g, {"code": "unreachable", "message": e.message, "hint": e.hint}, EXIT_UNREACHABLE)
     if rest[0] == "watch":
-        return _watch(hosts)
+        return _watch(hosts, g.json)
     if rest[0] == "tools":
         print(json.dumps(hosts[0].get("/api/v1/tools?format=anthropic"), indent=2, ensure_ascii=False))
         return EXIT_OK
@@ -304,7 +316,7 @@ def _install(fleet: Fleet, args) -> tuple[Any, str]:
     return res, f"wrote {res['file']} ({what})" + (f"\nbacked up the previous one to {res['backup']}" if res["backup"] else "")
 
 
-def _watch(hosts: list[HostHandle]) -> int:
+def _watch(hosts: list[HostHandle], as_json: bool = False) -> int:
     import threading
 
     def one(h: HostHandle) -> None:
@@ -312,6 +324,9 @@ def _watch(hosts: list[HostHandle]) -> int:
             for line in h.transport.stream("/api/v1/events"):
                 if line.startswith("data: "):
                     ev = json.loads(line[6:])
+                    if as_json:                      # for programs: one event per line, with its host
+                        print(json.dumps({"host": h.id, **ev}, ensure_ascii=False, default=str), flush=True)
+                        continue
                     ts = time.strftime("%H:%M:%S", time.localtime(ev["ts"]))
                     data = " ".join(f"{k}={v}" for k, v in ev["data"].items() if v is not None)
                     print(f"[{h.id}] {ts} {ev['topic']:<18} {data}", flush=True)

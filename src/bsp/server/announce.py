@@ -47,6 +47,7 @@ class Announcer:
         self.payload = payload
         self.last: dict[str, Any] = {}
         self._stop = threading.Event()
+        self._wake = threading.Event()
         self._thread = threading.Thread(target=self._run, name="announce", daemon=True)
 
     def body(self) -> dict[str, Any]:
@@ -76,10 +77,16 @@ class Announcer:
                 if not failing:
                     log.warning("announce to %s failed: %s (retrying every %gs)", self.url, e, self.interval)
                 failing = True
-            self._stop.wait(self.interval)
+            self._wake.wait(self.interval)
+            self._wake.clear()
+
+    def poke(self) -> None:
+        """Announce now rather than at the next interval (a board's cable came or went)."""
+        self._wake.set()
 
     def start(self) -> None:
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()

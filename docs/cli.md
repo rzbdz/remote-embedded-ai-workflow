@@ -106,7 +106,7 @@ whether the daemon is up as `console_up`.
 | `bsp probe [--pins P..] [--consoles C..] [--sdks LIST] [--dry-run] [--yes] [--no-identify] [--replace]` | Discover boards (pulses GPIO lines — see [getting-started.md](getting-started.md#option-a-probe-boards-wired-to-gpio-reset-lines)) |
 | `bsp -r HOST probe --human [--rounds N] [--wait S] [--consoles C..] [--yes]` | Discover boards without reset wiring: a person puts one unregistered board at a time into download mode, and bsp pairs the console that speaks with the USB port that appears; each becomes a slot reset by a person, as with `dut bind` |
 | `bsp remote list\|show\|add\|remove\|use` | Manage personal host entries |
-| `bsp watch` | Stream live events from the host(s) |
+| `bsp watch [--registry]` | Stream live events from the host(s), or with `--registry` from the registry (hosts announcing themselves, `registry.ports` when a host's cables change); `--json` prints one event per line for programs |
 | `bsp tools` | Print the host's AI tool schemas in Anthropic format (OpenAI format: `GET /api/v1/tools?format=openai`) |
 | `bsp hints` | Hints from the configuration layers (packs, site) |
 | `bsp install [--dir DIR] [--offline]` | Write `SKILL.md` for agents working in an SDK tree (see [agents.md](agents.md)) |

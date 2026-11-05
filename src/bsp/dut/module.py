@@ -76,6 +76,7 @@ class DutModule(Module):
         self.consoles = ConsoleManager(self.serial_mux, self.serial_log_dir)
         self.boards: dict[str, Board] = {}
         self._busy: dict[str, str] = {}
+        self.port_watcher = None
         from .control import Attention
         from .sshlogin import ConsoleLogins
 
@@ -453,7 +454,20 @@ class DutModule(Module):
         return {"job": job.id, "host": self.ctx.host_id}
 
     # ----------------------------------------------------------- plumbing --
+    def ports(self) -> dict[str, list[str]]:
+        """Serial and USB devices on this host right now (as the port watcher last saw them)."""
+        return self.port_watcher.current if self.port_watcher else {}
+
+    def _ports_changed(self, change: dict, now: dict) -> None:
+        self._event("ports", added=change["added"], removed=change["removed"])
+
     def startup(self) -> None:
+        from .ports import PortWatcher
+
+        cfg = self.config.get("watch_ports", True)
+        if cfg:
+            interval = cfg.get("interval_s", 2.0) if isinstance(cfg, dict) else 2.0
+            self.port_watcher = PortWatcher(self._ports_changed, interval).start()
         for b in self.boards.values():
             try:
                 b.control.setup()
@@ -463,6 +477,10 @@ class DutModule(Module):
                 self.consoles.ensure(b.spec.console_alias, b.spec.console.get("device"), only_if_known=True)
             except BspError as e:
                 self._event("error", dut=b.spec.id, error=e.to_dict())
+
+    def shutdown(self) -> None:
+        if self.port_watcher:
+            self.port_watcher.stop()
 
     def commands(self) -> list[Command]:
         def cmd(name, summary, handler, params=(), render=None, mutating=True, description=""):

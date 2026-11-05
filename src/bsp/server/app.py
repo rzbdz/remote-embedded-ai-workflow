@@ -73,7 +73,8 @@ class Hub:
     def announcement(self) -> dict[str, Any]:
         dut = self.modules.get("dut")
         return {"host": self.config.host_id, "port": self.config.port, "description": self.config.description,
-                "version": __version__, "duts": sorted(getattr(dut, "boards", {}) or {})}
+                "version": __version__, "duts": sorted(getattr(dut, "boards", {}) or {}),
+                "ports": dut.ports() if dut else {}}
 
     def status(self) -> dict[str, Any]:
         return {
@@ -148,6 +149,7 @@ def create_app(config: HostConfig) -> FastAPI:
 
             announcer = Announcer(config.announce, hub.announcement)
             hub.announcer = announcer
+            hub.bus.on("dut.ports", lambda ev: announcer.poke())     # tell the registry about new cables at once
             announcer.start()
         yield
         if announcer:

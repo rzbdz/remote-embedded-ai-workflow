@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Hosts watch for serial and USB devices coming and going (`dut.ports`) and tell the registry at
+  once (`registry.ports`); `bsp watch --registry [--json]` streams the registry's events.
 - `bsp probe --human`: find boards without reset wiring by asking a person to put each one into
   download mode, pairing its console with the USB port that appears.
 - `bsp dut renew`: extend a lease from now, keeping its token.

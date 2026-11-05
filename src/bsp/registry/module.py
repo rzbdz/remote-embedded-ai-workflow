@@ -85,12 +85,20 @@ class RegistryModule(Module):
                      "description": str(body.get("description") or "")[:200],
                      "version": str(body.get("version") or "")[:40],
                      "duts": [str(d) for d in (body.get("duts") or [])][:200],
+                     "ports": {k: [str(x) for x in v][:500] for k, v in (body.get("ports") or {}).items()
+                               if k in ("tty", "usb") and isinstance(v, list)},
                      "first_seen": old.get("first_seen", now), "seen": now}
             changed = {k: v for k, v in entry.items() if k not in ("seen", "first_seen") and old.get(k) != v}
             self._hosts[host] = entry
             self._save()
         if changed:
             self.ctx.bus.publish("registry.announced", host=host, addresses=addrs, new=not old)
+        if "ports" in changed and old:
+            before, now = old.get("ports") or {}, entry["ports"]
+            added = {k: sorted(set(now.get(k, [])) - set(before.get(k, []))) for k in ("tty", "usb")}
+            removed = {k: sorted(set(before.get(k, [])) - set(now.get(k, []))) for k in ("tty", "usb")}
+            if any(added.values()) or any(removed.values()):
+                self.ctx.bus.publish("registry.ports", host=host, added=added, removed=removed)
         return {"host": host, "registered": True, "seen_address": seen, "addresses": addrs,
                 "refresh_s": max(10, int(self.stale_s / 4))}
 
