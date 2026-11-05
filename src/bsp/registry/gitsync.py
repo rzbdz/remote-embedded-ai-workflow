@@ -50,14 +50,16 @@ class GitMirror:
         self._stop = threading.Event()
 
     # ------------------------------------------------------------- git --
-    def git(self, *args: str, check: bool = True, env: dict[str, str] | None = None, timeout: float = 120) -> str:
+    def git(self, *args: str, check: bool = True, env: dict[str, str] | None = None, timeout: float = 120,
+            raw: bool = False) -> str:
+        """Run git in the clone; `raw` keeps the output exactly (file contents), otherwise it is stripped."""
         import os
 
         r = subprocess.run(["git", "-C", str(self.dir), *args], capture_output=True, text=True, timeout=timeout,
                            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", **(env or {})})
         if check and r.returncode != 0:
             raise GitError(f"git {' '.join(args[:3])}: {(r.stderr or r.stdout).strip()[-400:]}")
-        return r.stdout.strip()
+        return r.stdout if raw else r.stdout.strip()
 
     def ensure(self) -> None:
         if not (self.dir / ".git").exists():
@@ -90,8 +92,9 @@ class GitMirror:
             return False
         who = job["author"] or "unknown"
         email = re.sub(r"[^A-Za-z0-9._+-]", "-", who) + "@bsp.invalid"
-        subject = job["message"] or f"{'delete' if job['text'] is None else 'update'} {ref_of(job['kind'], job['id'])}"
-        msg = f"{ref_of(job['kind'], job['id'])}: {subject}\n\n{TRAILER}: {job['rev']}\n"
+        ref = ref_of(job["kind"], job["id"])
+        subject = job["message"] or f"{'delete' if job['text'] is None else 'update'} {ref}"
+        msg = f"{subject if subject.startswith(ref + ':') else f'{ref}: {subject}'}\n\n{TRAILER}: {job['rev']}\n"
         self.git("commit", "-q", "-m", msg, env={"GIT_AUTHOR_NAME": who, "GIT_AUTHOR_EMAIL": email,
                                                    "GIT_COMMITTER_NAME": self.name, "GIT_COMMITTER_EMAIL": self.email})
         return True
@@ -158,7 +161,7 @@ class GitMirror:
                     continue
                 kind, ident = m.groups()
                 ref = ref_of(kind, ident)
-                text = None if status.startswith("D") else self.git("show", f"{sha}:{path}")
+                text = None if status.startswith("D") else self.git("show", f"{sha}:{path}", raw=True)
                 try:
                     cur = self.store._current(kind, ident)
                     res = self.store._write(kind, ident, text, cur["rev"] if cur else 0, True, f"git:{author}",
@@ -186,7 +189,7 @@ class GitMirror:
         neither the catalog nor (through the clone, which is also the site) the files take the bad version. The pinned
         revision is committed back, which reverts the change in the repository with the reason."""
         try:
-            before = self.git("show", f"{sha}^:{path}", check=False) or None
+            before = self.git("show", f"{sha}^:{path}", check=False, raw=True) or None
             cur = self.store._current(kind, ident)
             if cur and cur["text"] == before:
                 return

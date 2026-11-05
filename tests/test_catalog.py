@@ -231,12 +231,13 @@ def test_git_registry_commits_writes_and_takes_in_pushed_commits(tmp_path):
     res = mirror.pull_now()
     assert [a["ref"] for a in res["applied"]] == ["bsp-a"] and res["applied"][0]["author"] == "alice"
     assert "edited on gitlab" in store.get("bsp-a")["text"] and store.get("bsp-a")["author"] == "git:alice"
+    assert store.get("bsp-a")["text"] == doc.read_text()                     # exactly, final newline included
     assert [r["ref"] for r in res["rejected"]] == ["upstream-a"] and "would not load" in res["rejected"][0]["error"]
     assert "no-such-family" not in store.get("upstream-a")["text"]          # the catalog keeps what worked
     assert store.get("upstream-a")["author"] == "registry" and "revert git" in store.get("upstream-a")["message"]
     # the pinned version goes back into git as a revert with the reason
-    while not mirror.queue.empty():
-        mirror._commit(mirror.queue.get_nowait())
+    commits = [mirror._commit(mirror.queue.get_nowait()) for _ in range(mirror.queue.qsize())]
+    assert commits.count(True) == 1                                          # only the revert: no echo of alice's change
     mirror.push()
     assert "no-such-family" not in (site / "sdk" / "instances" / "upstream-a.yaml").read_text()
     assert "does not validate" in git(remote, "log", "-1", "--format=%s", "main")
