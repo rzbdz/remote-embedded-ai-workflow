@@ -259,8 +259,14 @@ class DutModule(Module):
         runner = b.runner(self)
         rev = self.catalog_rev()
 
+        hub_follower = self.ctx.services.get("catalog_follower")
+        overridden = [x for x in (hub_follower.shadowed if hub_follower else []) if x["ref"] == sdk]
+
         def body(log):
             log(f"recipe from catalog revision {rev}" if rev else "recipe from the site's catalog")
+            for x in overridden:
+                log(f"NOTE: {x['file']} on this host differs from the registry's {sdk} and is NOT used; "
+                    f"publish it with `boardlab registry sdk put {sdk} -f <file>` if it is the newer one")
             return runner.run(inst, method, variant, log)
 
         job = self._start_job(dut, f"boot {sdk} [{method}]", body,

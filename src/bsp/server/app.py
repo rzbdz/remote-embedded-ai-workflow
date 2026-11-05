@@ -68,7 +68,13 @@ class Hub:
         if config.announce:
             from .catalog_follow import CatalogFollower
 
-            self.follower = CatalogFollower(config.announce["url"], config.state_dir / "catalog", self.bus)
+            from ..core.site import layered
+
+            site = (config.config_dir / "..").resolve()
+            self.follower = CatalogFollower(config.announce["url"], config.state_dir / "catalog", self.bus,
+                                            layered("sdk", site))
+        if self.follower:
+            ctx.services["catalog_follower"] = self.follower
         self.registry = CommandRegistry()
         self.registry.extend(self._core_commands())
         for m in self.modules.values():
@@ -80,7 +86,8 @@ class Hub:
         dut = self.modules.get("dut")
         return {"host": self.config.host_id, "port": self.config.port, "description": self.config.description,
                 "version": __version__, "duts": sorted(getattr(dut, "boards", {}) or {}),
-                "ports": dut.ports() if dut else {}, "catalog_rev": self.follower.rev if self.follower else 0}
+                "ports": dut.ports() if dut else {}, "catalog_rev": self.follower.rev if self.follower else 0,
+                "catalog_shadowed": self.follower.shadowed if self.follower else []}
 
     def status(self) -> dict[str, Any]:
         return {
@@ -92,7 +99,8 @@ class Hub:
             "auth": bool(self.config.auth_token),
             "modules": {n: {"title": m.title, **m.status()} for n, m in self.modules.items()},
             **({"announce": {"url": self.announcer.url, **self.announcer.last}} if self.announcer else {}),
-            **({"catalog": {"rev": self.follower.rev, **self.follower.last}} if self.follower else {}),
+            **({"catalog": {"rev": self.follower.rev, **self.follower.last, "shadowed": self.follower.shadowed}}
+               if self.follower else {}),
         }
 
     def _core_commands(self) -> list[Command]:
@@ -114,9 +122,16 @@ class Hub:
 
         follow = []
         if self.follower:
+            def shown(r: dict[str, Any]) -> str:
+                text = f"catalog revision {r.get('rev')}" + ("" if r.get("ok") else f" (registry unreachable: {r.get('error')})")
+                for x in r.get("shadowed") or []:
+                    text += f"\nNOT IN EFFECT: {x['file']} differs from the registry's {x['ref']}; publish it: bsp catalog put {x['ref']} -f <file>"
+                return text
+
             follow = [Command(CommandSpec("catalog.sync", "Fetch the registry's SDK catalog now (the registry asks after changes)",
-                                          []), lambda: self.follower.sync(),
-                              lambda r: f"catalog revision {r.get('rev')}" + ("" if r.get("ok") else f" (registry unreachable: {r.get('error')})"))]
+                                          [Param("reset", "boolean", "throw the local copy away and fetch it again",
+                                                 required=False, default=False)]),
+                              lambda reset: self.follower.sync(reset), shown)]
         return follow + [
             Command(CommandSpec("status", "Service, module and backend health", [], mutating=False),
                     self.status, render_status),

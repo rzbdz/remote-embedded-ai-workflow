@@ -93,6 +93,7 @@ class RegistryModule(Module):
                      "version": str(body.get("version") or "")[:40],
                      "duts": [str(d) for d in (body.get("duts") or [])][:200],
                      "catalog_rev": int(body.get("catalog_rev") or 0),
+                     "catalog_shadowed": [x for x in (body.get("catalog_shadowed") or []) if isinstance(x, dict)][:100],
                      "ports": {k: [str(x) for x in v][:500] for k, v in (body.get("ports") or {}).items()
                                if k in ("tty", "usb") and isinstance(v, list)},
                      "first_seen": old.get("first_seen", now), "seen": now}
@@ -165,7 +166,30 @@ class RegistryModule(Module):
         rev = self.catalog.rev
         return {"rev": rev, "hosts": [{"host": e["host"], "catalog_rev": e.get("catalog_rev", 0),
                                        "current": e.get("catalog_rev", 0) == rev, "stale": e["stale"], "age_s": e["age_s"],
+                                       "shadowed": e.get("catalog_shadowed") or [],
                                        "duts": e["duts"], "ports": e.get("ports") or {}} for e in self.list(all=True)]}
+
+    def refresh(self) -> dict[str, Any]:
+        """Have every host throw its copy of the catalog away and fetch it again now; report what each has."""
+        import urllib.request
+
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        hosts = []
+        for e in self.list():
+            row = {"host": e["host"], "rev": None, "error": None, "shadowed": []}
+            for url in [e["remote"]["url"], *e["remote"]["fallback_urls"]]:
+                try:
+                    req = urllib.request.Request(url + "/api/v1/tools/catalog_sync", data=json.dumps({"reset": True}).encode(),
+                                                 method="POST", headers={"Content-Type": "application/json"})
+                    res = json.loads(opener.open(req, timeout=30).read())
+                    if not res.get("ok"):
+                        raise ValueError((res.get("error") or {}).get("message"))
+                    row.update(rev=res["result"].get("rev"), error=None, shadowed=res["result"].get("shadowed") or [])
+                    break
+                except Exception as ex:  # noqa: BLE001 - reported per host
+                    row["error"] = str(ex)
+            hosts.append(row)
+        return {"rev": self.catalog.rev, "hosts": hosts}
 
     def open_paths(self) -> list[str]:
         # Anyone may read and change the catalog: every change is checked, attributed and can be rolled back.
@@ -215,10 +239,18 @@ class RegistryModule(Module):
                     lambda author, check: self._changed(c.import_seed(author or "import", check)), show),
             Command(CommandSpec("catalog.snapshot", "The registry's catalog documents and deletions (what hosts layer on their site)",
                                 [], mutating=False), c.snapshot, lambda r: f"catalog revision {r['rev']}: {len(r['docs'])} document(s)"),
-            Command(CommandSpec("catalog.status", "The catalog revision, and which revision each host has", [], mutating=False),
+            Command(CommandSpec("catalog.status", "The catalog revision, which revision each host has, and site edits it overrides",
+                                [], mutating=False),
                     self.catalog_status,
                     lambda r: f"catalog revision {r['rev']}\n" + "\n".join(
                         f"  {h['host']:<16} rev {h['catalog_rev']:<5} {'ok' if h['current'] else 'BEHIND'}{' (stale)' if h['stale'] else ''}"
+                        + "".join(f"\n    NOT IN EFFECT: {x['file']} differs from {x['ref']} (publish with put)" for x in h["shadowed"])
+                        for h in r["hosts"])),
+            Command(CommandSpec("catalog.refresh", "Every host throws its catalog copy away and fetches it again now", []),
+                    self.refresh,
+                    lambda r: f"catalog revision {r['rev']}\n" + "\n".join(
+                        f"  {h['host']:<16} " + (f"rev {h['rev']}" if h["rev"] is not None else f"FAILED: {h['error']}")
+                        + "".join(f"\n    NOT IN EFFECT: {x['file']} differs from {x['ref']} (publish with put)" for x in h["shadowed"])
                         for h in r["hosts"])),
         ]
 

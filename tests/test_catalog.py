@@ -160,3 +160,23 @@ def test_cli_edit_round_trip_uses_the_revision_in_the_file(tmp_path, monkeypatch
         assert main(["catalog", "put", "bsp-a", "-f", str(f)]) == 1                    # same stale file again
         assert "changed since revision 0" in capsys.readouterr().err
         assert reg.get("/api/v1/catalog/history?ref=bsp-a").json()["result"][0]["author"] == "claude:cli"
+
+
+def test_a_host_reports_site_edits_the_registry_overrides(tmp_path, store):
+    """Editing the site file on a host does nothing once the registry has the document: say so, loudly."""
+    import shutil
+
+    from bsp.core.events import EventBus
+    from bsp.server.catalog_follow import CatalogFollower
+
+    site = tmp_path / "site-sdk"
+    shutil.copytree(SEED[0], site)
+    store.recipe("bsp-b", "download", RECIPE, author="claude:flash")
+    f = CatalogFollower("http://registry.invalid", tmp_path / "layer", EventBus(), [site])
+    materialize(store.snapshot(), f.layer)
+    assert f.find_shadowed() == [{"ref": "bsp-b", "file": str(site / "instances" / "bsp-b.yaml"),
+                                  "modified": int((site / "instances" / "bsp-b.yaml").stat().st_mtime)}]
+    # once the registry has what the site says, nothing is overridden
+    store.put("bsp-b", (site / "instances" / "bsp-b.yaml").read_text(), base=store.get("bsp-b")["rev"], author="x")
+    materialize(store.snapshot(), f.layer)
+    assert f.find_shadowed() == []

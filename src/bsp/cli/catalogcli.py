@@ -103,7 +103,8 @@ def add_parser(sub) -> None:
     im.add_argument("--author")
     ex = cs.add_parser("export", help="write the registry's documents as site files (backup), with removed.json")
     ex.add_argument("--dir", required=True)
-    cs.add_parser("status", help="the catalog revision, and the revision each host has")
+    cs.add_parser("status", help="the catalog revision, the revision each host has, and site edits it overrides")
+    cs.add_parser("refresh", help="clear this machine's cached catalog and have every host fetch it again now")
 
 
 def run(args, store: RemoteStore, token: str | None) -> tuple[Any, str]:
@@ -167,4 +168,13 @@ def run(args, store: RemoteStore, token: str | None) -> tuple[Any, str]:
             f"wrote catalog revision {snap['rev']} ({len(snap['docs'])} documents) to {dest}"
     if c == "status":
         return call("catalog_status")
+    if c == "refresh":
+        import shutil
+
+        cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "bsp"
+        cleared = [str(p) for p in cache.glob("catalog-*")]
+        for p in cleared:
+            shutil.rmtree(p, ignore_errors=True)
+        res, text = call("catalog_refresh")
+        return {**res, "cleared": cleared}, (f"cleared {len(cleared)} cached catalog(s) here\n" if cleared else "") + (text or "")
     raise InvalidRequest(f"unknown catalog action {c}")

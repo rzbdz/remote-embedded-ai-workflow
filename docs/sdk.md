@@ -169,7 +169,8 @@ the registry once; `bsp catalog export --dir DIR` writes the registry's document
 | `bsp catalog recipe SDK load\|download -f FILE [...]` | Replace one recipe: a list of steps, or `{status, steps, notes, variants}` |
 | `bsp catalog rm REF --base REV [-m MSG]` | Delete a document |
 | `bsp catalog history REF`, `bsp catalog rollback REF REV` | Every revision, and writing an earlier one again |
-| `bsp catalog status` | The catalog revision, and which revision each host has |
+| `bsp catalog status` | The catalog revision, which revision each host has, and site edits it overrides |
+| `bsp catalog refresh` | Clear this machine's cached catalog and have every host fetch it again now |
 
 `REF` is an SDK id, or `family/ID`, `server/ID`, `workspace/ID`.
 
@@ -191,3 +192,10 @@ keep the recipe they started with; each boot job's log names the catalog revisio
 from. Clients (`bsp sdk`, `bsp catalog`) read the registry's catalog too, keeping the last copy in
 `~/.cache/bsp/` for when the registry cannot be reached. The registry stores the catalog in
 `<state>/registry/catalog.sqlite`.
+
+**Edit the registry, not a host's files.** Once the registry has a document, it overrides the
+file of the same id in any site directory, so an edit made in a host's copy of the site
+(`/opt/bsp-dev-loop/site/sdk/...`) has no effect. Hosts compare their site files with the
+registry's documents and report every such edit as not in effect: in `bsp catalog status`, in
+the host's `bsp status`, in its log, and in the log of any boot that uses the document. Publish
+the edit with `bsp catalog put REF -f FILE` (after a `get` if someone changed it since).
