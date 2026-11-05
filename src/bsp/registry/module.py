@@ -18,10 +18,13 @@ from typing import Any
 
 from ..core.cmdspec import CommandSpec, Param
 from ..core.commands import Command
+import logging
+
 from ..core.errors import InvalidRequest, NotFound
 from ..sdk.catalog import BOOT_METHODS
 from ..core.module import MODULES, Module, ModuleContext
 
+log = logging.getLogger(__name__)
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
 _SSH_USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 
@@ -59,6 +62,15 @@ class RegistryModule(Module):
         # The SDK catalog, seeded by the site this registry runs with (<site>/hosts/<registry>.yaml -> <site>).
         site = (ctx.config_dir / config.get("site", "..")).resolve()
         self.catalog = CatalogStore(ctx.module_state_dir("registry") / "catalog.sqlite", layered("sdk", site))
+        # git-registry: the site directory is a clone of the catalog repository, kept in step with the catalog
+        self.git = None
+        if config.get("git"):
+            from .gitsync import GitMirror
+
+            self.git = GitMirror(self.catalog, site, config["git"] if isinstance(config["git"], dict) else {}, ctx.bus)
+            self.catalog.listeners.append(self.git.record)
+            # documents taken in from git reach the hosts like any other change
+            ctx.bus.on("catalog.git", lambda ev: ev.data.get("applied") and self._changed({"ref": "git", "rev": self.catalog.rev}))
 
     def _save(self) -> None:
         tmp = self.path.with_suffix(".tmp")
@@ -162,9 +174,21 @@ class RegistryModule(Module):
         threading.Thread(target=nudge, name="catalog nudge", daemon=True).start()
         return result
 
+    def startup(self) -> None:
+        if self.git:
+            try:
+                self.git.start()
+            except Exception as e:  # noqa: BLE001 - the catalog still works; status says why git does not
+                self.git.state["last_error"] = str(e)
+                log.warning("git-registry not started: %s", e)
+
+    def shutdown(self) -> None:
+        if self.git:
+            self.git.stop()
+
     def catalog_status(self) -> dict[str, Any]:
         rev = self.catalog.rev
-        return {"rev": rev, "hosts": [{"host": e["host"], "catalog_rev": e.get("catalog_rev", 0),
+        return {"rev": rev, "git": self.git.status() if self.git else None, "hosts": [{"host": e["host"], "catalog_rev": e.get("catalog_rev", 0),
                                        "current": e.get("catalog_rev", 0) == rev, "stale": e["stale"], "age_s": e["age_s"],
                                        "shadowed": e.get("catalog_shadowed") or [],
                                        "duts": e["duts"], "ports": e.get("ports") or {}} for e in self.list(all=True)]}
@@ -190,6 +214,11 @@ class RegistryModule(Module):
                     row["error"] = str(ex)
             hosts.append(row)
         return {"rev": self.catalog.rev, "hosts": hosts}
+
+    def _git_pull(self) -> dict[str, Any]:
+        if not self.git:
+            raise InvalidRequest("this registry keeps no git repository", hint="set modules.registry.git in its host config")
+        return self.git.pull_now()
 
     def open_paths(self) -> list[str]:
         # Anyone may read and change the catalog: every change is checked, attributed and can be rolled back.
@@ -242,10 +271,20 @@ class RegistryModule(Module):
             Command(CommandSpec("catalog.status", "The catalog revision, which revision each host has, and site edits it overrides",
                                 [], mutating=False),
                     self.catalog_status,
-                    lambda r: f"catalog revision {r['rev']}\n" + "\n".join(
+                    lambda r: f"catalog revision {r['rev']}" + (
+                        f"  (git {r['git']['remote']} {r['git']['branch']} at {r['git']['head']}, pushed {r['git']['pushed']}"
+                        + (f", {r['git']['pending']} pending" if r['git']['pending'] else "")
+                        + (f"; ERROR {r['git']['last_error']}" if r['git']['last_error'] else "") + ")"
+                        + "".join(f"\n  NOT APPLIED from git: {x['ref']} ({x['author']}, {x['commit']}): {x['error']}" for x in r['git']['rejected'][-5:])
+                        if r.get("git") else "") + "\n" + "\n".join(
                         f"  {h['host']:<16} rev {h['catalog_rev']:<5} {'ok' if h['current'] else 'BEHIND'}{' (stale)' if h['stale'] else ''}"
                         + "".join(f"\n    NOT IN EFFECT: {x['file']} differs from {x['ref']} (publish with put)" for x in h["shadowed"])
                         for h in r["hosts"])),
+            Command(CommandSpec("catalog.git_pull", "Take commits pushed to the catalog's git repository in now (validated)", []),
+                    self._git_pull,
+                    lambda r: "\n".join([f"{r.get('commits', 0)} new commit(s)"]
+                                        + [f"  applied {a['ref']} as revision {a['rev']} ({a['author']}, {a['commit']})" for a in r["applied"]]
+                                        + [f"  NOT APPLIED {x['ref']} ({x['author']}, {x['commit']}): {x['error']}" for x in r["rejected"]])),
             Command(CommandSpec("catalog.refresh", "Every host throws its catalog copy away and fetches it again now", []),
                     self.refresh,
                     lambda r: f"catalog revision {r['rev']}\n" + "\n".join(

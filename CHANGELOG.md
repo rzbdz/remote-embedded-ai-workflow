@@ -13,6 +13,8 @@ All notable changes to this project are documented here. The format follows
   boot ROM's console banner or its USB download device now counts as being in download mode.
 
 ### Added
+- git-registry (`modules.registry.git`): the registry commits every catalog change to a git
+  repository and validates commits pushed there by others before taking them in.
 - `bsp catalog refresh`; hosts report site edits the registry's catalog overrides (not in effect).
 - The SDK catalog in the registry (`bsp catalog …`): versioned documents with history and rollback,
   conflict checks, validation of every change against the whole catalog, distribution to hosts

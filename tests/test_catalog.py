@@ -180,3 +180,64 @@ def test_a_host_reports_site_edits_the_registry_overrides(tmp_path, store):
     store.put("bsp-b", (site / "instances" / "bsp-b.yaml").read_text(), base=store.get("bsp-b")["rev"], author="x")
     materialize(store.snapshot(), f.layer)
     assert f.find_shadowed() == []
+
+
+def test_git_registry_commits_writes_and_takes_in_pushed_commits(tmp_path):
+    """The catalog kept in a git repository: writes become commits; commits pushed by others are validated in."""
+    import shutil
+    import subprocess
+
+    from bsp.core.events import EventBus
+    from bsp.registry.gitsync import GitMirror
+
+    def git(cwd, *args):
+        return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True).stdout.strip()
+
+    remote, site, other = tmp_path / "remote.git", tmp_path / "site", tmp_path / "other"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+    seed = tmp_path / "seed"
+    shutil.copytree(ROOT / "examples" / "site" / "sdk", seed / "sdk")
+    for d, cfg in ((seed, None),):
+        git(d.parent, "init", "-q", "-b", "main", str(d))
+        git(d, "-c", "user.name=t", "-c", "user.email=t@x", "add", ".")
+        git(d, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "site")
+        git(d, "push", "-q", str(remote), "main")
+    subprocess.run(["git", "clone", "-q", str(remote), str(site)], check=True)
+    subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+
+    store = CatalogStore(tmp_path / "c.sqlite", [site / "sdk"])
+    bus = EventBus()
+    mirror = GitMirror(store, site, {"remote": str(remote), "branch": "main", "pull_s": 3600}, bus)
+    store.listeners.append(mirror.record)
+    mirror.ensure()
+
+    # a registry write is committed (author and message kept) and pushed
+    store.recipe("bsp-b", "download", RECIPE, author="claude:flash", message="flash over fastboot")
+    job = mirror.queue.get_nowait()
+    assert mirror._commit(job)
+    mirror.push()
+    log = git(remote, "log", "-1", "--format=%an|%s|%b", "main")
+    assert log.startswith("claude:flash|bsp-b: flash over fastboot|Catalog-Revision: 1")
+
+    # someone edits the repository directly: the change is validated and taken into the catalog as them
+    git(other, "pull", "-q")
+    doc = other / "sdk" / "instances" / "bsp-a.yaml"
+    doc.write_text(doc.read_text().replace("example vendor BSP for soc-a", "edited on gitlab"))
+    git(other, "-c", "user.name=alice", "-c", "user.email=a@x", "commit", "-qam", "describe bsp-a")
+    bad = other / "sdk" / "instances" / "upstream-a.yaml"
+    bad.write_text(bad.read_text().replace("family: kernel-script", "family: no-such-family"))
+    git(other, "-c", "user.name=bob", "-c", "user.email=b@x", "commit", "-qam", "break it")
+    git(other, "push", "-q", "origin", "main")
+    res = mirror.pull_now()
+    assert [a["ref"] for a in res["applied"]] == ["bsp-a"] and res["applied"][0]["author"] == "alice"
+    assert "edited on gitlab" in store.get("bsp-a")["text"] and store.get("bsp-a")["author"] == "git:alice"
+    assert [r["ref"] for r in res["rejected"]] == ["upstream-a"] and "would not load" in res["rejected"][0]["error"]
+    assert "no-such-family" not in store.get("upstream-a")["text"]          # the catalog keeps what worked
+    assert store.get("upstream-a")["author"] == "registry" and "revert git" in store.get("upstream-a")["message"]
+    # the pinned version goes back into git as a revert with the reason
+    while not mirror.queue.empty():
+        mirror._commit(mirror.queue.get_nowait())
+    mirror.push()
+    assert "no-such-family" not in (site / "sdk" / "instances" / "upstream-a.yaml").read_text()
+    assert "does not validate" in git(remote, "log", "-1", "--format=%s", "main")
+    assert git(site, "rev-parse", "HEAD") == git(remote, "rev-parse", "main")

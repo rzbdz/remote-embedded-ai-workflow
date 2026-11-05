@@ -199,3 +199,27 @@ file of the same id in any site directory, so an edit made in a host's copy of t
 registry's documents and report every such edit as not in effect: in `bsp catalog status`, in
 the host's `bsp status`, in its log, and in the log of any boot that uses the document. Publish
 the edit with `bsp catalog put REF -f FILE` (after a `get` if someone changed it since).
+
+### Keeping the catalog in git (git-registry)
+
+The registry can keep the catalog in a git repository as well. Make the registry's site
+directory a clone of the repository (the whole site: hosts, SoC profiles and so on can live
+there) and set
+
+```yaml
+modules:
+  registry:
+    git: {remote: git@git.example.org:lab/bsp-catalog.git, branch: main, pull_s: 60}
+```
+
+- Every catalog write is committed to the clone (`sdk/<kind>/<id>.yaml`) with the author and
+  message of the change and a `Catalog-Revision:` trailer, and pushed, in order, by a background
+  worker. If the remote moved, it takes those commits in first and pushes again.
+- Commits pushed to the repository by anyone else are pulled every `pull_s` seconds, or at once
+  with `bsp catalog git_pull` (host command on the registry). Each SDK document they change is
+  validated against the whole catalog and applied as `git:<commit author>`; hosts get it like
+  any other change. A document that does not validate is not applied: the registry keeps the
+  version before it and commits that back, which reverts the change in the repository with the
+  reason, and `bsp catalog status` lists it.
+- The registry needs push access (its ssh key on the repository). `bsp catalog status` shows the
+  repository, the head, what was last pushed, writes still pending and the last error.

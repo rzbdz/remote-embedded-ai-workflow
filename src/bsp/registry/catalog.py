@@ -72,6 +72,8 @@ def _parse(text: str, ident: str) -> dict[str, Any]:
 class CatalogStore:
     def __init__(self, path: Path, seed_roots: list[Path]):
         self.seed_roots = [Path(r) for r in seed_roots]
+        # called as fn(kind, id, text or None, author, message, rev) after each stored write (e.g. the git mirror)
+        self.listeners: list[Any] = []
         self._lock = threading.Lock()
         self.db = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self.db.execute("PRAGMA journal_mode=WAL")
@@ -238,6 +240,11 @@ class CatalogStore:
             except Exception:
                 self.db.execute("ROLLBACK")
                 raise
+        for fn in list(self.listeners):
+            try:
+                fn(kind, ident, text, author, message, rev)
+            except Exception:  # noqa: BLE001 - a listener never undoes a stored write
+                pass
         return {"ref": ref_of(kind, ident), "rev": rev, "previous": now_rev, "deleted": text is None, "catalog": checked}
 
     def put(self, ref: str, text: str, base: int | None = None, force: bool = False, author: str = "",
