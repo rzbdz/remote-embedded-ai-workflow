@@ -3,19 +3,58 @@
 bsp is an atomic, scriptable layer over three kinds of resources — boards (DUTs), the board
 hosts that control them, and SDK source trees on build servers. Every capability is one
 command that works the same for a human at a terminal, an agent (`--json`), an HTTP client
-and the web console. The README has the overview diagram; this file covers the internals.
+and the web console. This page describes the internals; start with the [README](../README.md) for an overview.
 
+## Components
+
+```mermaid
+flowchart TB
+  subgraph client["Client (workstation or build server)"]
+    cli["bsp CLI<br/>Python ≥ 3.8, stdlib + PyYAML"]
+  end
+  subgraph server["Build server"]
+    helper["sdk/helper.py over ssh<br/>leases · task branches · build jobs"]
+  end
+  subgraph host["Board host"]
+    hostd["bsp-hostd (FastAPI)"]
+    gpio["gpio_relay module<br/>channels · aliases"]
+    sdkm["sdk module<br/>catalog (read-only)"]
+    dut["dut module<br/>registry · leases · boot runner · probe · console logins"]
+    hooks["hooks<br/>probe/* · flash/*"]
+    mux["serial-mux consoles<br/>bsp-console-ALIAS units"]
+    hostd --> gpio & sdkm & dut
+    dut --> gpio
+    dut --> hooks
+    dut --> mux
+  end
+  web["Web console · curl · AI tools"] -- "HTTP" --> hostd
+  cli -- "ssh" --> helper
+  cli -- "HTTP, or HTTP over ssh" --> hostd
+  dut -- "ssh: fetch artifacts" --> helper
 ```
- people / agents ──▶ bsp CLI (client side, stdlib + PyYAML, Python ≥3.8)
-                      │  sdk ...  ──ssh──▶ build servers: sdk/helper.py
-                      │                     lease + stash + task branch, build jobs (tmux + flock)
-                      │  dut/probe/hosts ─▶ fleet of board hosts (HTTP, or HTTP-over-ssh)
-                      ▼
- board host (bsp-hostd, FastAPI) ─ modules ─ gpio_relay · sdk catalogue · dut
-                      │ dut: registry, leases, control backend, fastboot, serial console,
-                      │      boot executor (recipes), probe orchestrator, hooks
-                      ▼
- DUT boards  ◀── reset/FDL GPIO · USB (fastboot) · serial (serial-mux)
+
+Every host feature is a `Module` that publishes `CommandSpec`s; each spec becomes a REST route,
+an AI tool, a web-console command and a CLI subcommand at once (`core/cmdspec.py`). SDK work
+that touches source trees is client-side: the CLI pipes a stdlib-only helper to the build
+server over ssh, so nothing is installed there.
+
+## Concepts
+
+```mermaid
+flowchart LR
+  site["Site"] -- declares --> host["Board host"]
+  site -- declares --> target["SDK target"]
+  pack["Pack"] -- provides --> soc["SoC profile"]
+  host -- "has a header map" --> header["Board map (pins)"]
+  host -- "controls" --> dut["DUT (board)"]
+  dut -- "is a" --> soc
+  target -- "is built for" --> soc
+  target -- "builds in" --> ws["Workspace (source tree)"]
+  ws -- "lives on" --> bs["Build server"]
+  target -- "uses build style" --> fam["Family"]
+  dut -. "runs (default: all targets of its SoC)" .-> target
+  dlease["DUT lease"] -. locks .-> dut
+  wlease["Workspace lease"] -. locks .-> ws
 ```
 
 ## Configuration layers
@@ -27,6 +66,11 @@ and the web console. The README has the overview diagram; this file covers the i
 | core | mechanism, abstract concepts, generic hooks (`hooks/`), `examples/site/` | this repo |
 | packs | public hardware knowledge: SoC profiles, purchasable board pin maps, hooks for public tool formats | `packs/<name>/`, selected by `<site>/bsp.yaml` `packs:` (default: all) |
 | site | private: hosts, deploy targets, build servers, SDK layouts, boot/flash recipes, probe images, DUTs, hints | `$BSP_SITE`, `~/.config/bsp/site`, `/etc/bsp/site` |
+
+```mermaid
+flowchart LR
+  core["Core<br/>this repository"] -- "overridden by" --> packs["Packs<br/>packs/NAME"] -- "overridden by" --> site["Site<br/>BSP_SITE"]
+```
 
 Each layer may contribute `boards/`, `socs/`, `hooks/`, `sdk/{families,servers,workspaces,instances}/`,
 `duts/`, `hints/`. Consumers ask for `layered(kind)` and never hard-code a vendor. A
@@ -84,7 +128,7 @@ download mode, and the generic `hooks/probe/identify` to run `identify`. Boot us
 | add a board (DUT) | plug it in, `bsp probe` | `dut.add` JSON spec |
 | new SoC | `socs/<soc>/soc.yaml` in a pack; probe images in the site | SoC profile |
 | probe mechanism | replace `hooks/probe/{consoles,usb-devices,identify}` (any language) | JSON stdin → last-line JSON stdout, exit 0/2/other |
-| reset/FDL mechanism | `ControlBackend` subclass, `@CONTROL_BACKENDS.register` (gpio-relay, manual, home-assistant stub) | `reset()`, `enter_fdl()`, `setup()` |
+| reset/FDL mechanism | `ControlBackend` subclass, `@CONTROL_BACKENDS.register` (gpio-relay, human, home-assistant stub) | `reset(log, ready)`, `enter_fdl(log, ready)`, `setup()` |
 | boot / flash procedure | recipe steps in the SDK instance (`boot.load`, `boot.download`); a `hook` step calls `hooks/flash/<name>` | step kinds in `sdk/catalog.py` |
 | new SDK | `<site>/sdk/instances/<id>.yaml` (+ family if the build style is new) | YAML |
 | new build style | family `build.runner` (`make`, `envsetup`, `script`) in `Instance.build_command` | runner |

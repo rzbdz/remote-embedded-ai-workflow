@@ -42,9 +42,26 @@ class BootRunner:
             details={"console_tail": "\n".join(self.console.tail(15))},
         )
 
+    def download_evidence(self, mark) -> "Callable[[], str | None]":
+        """A check that reports how the board shows it is in download mode (console or USB)."""
+        con_rx = re.compile(self.download_mode["console"]) if self.download_mode.get("console") else None
+        fb_rx = re.compile(self.download_mode.get("fastboot") or ".")
+
+        def seen() -> str | None:
+            if con_rx and con_rx.search(self.console.read_since(mark)):
+                return f"download mode on the console (/{con_rx.pattern}/)"
+            try:
+                st = self.fb.state()
+            except Exception:  # noqa: BLE001 - no fastboot yet is just "not seen"
+                st = None
+            if st and fb_rx.search(st.get("product", "")):
+                return f"download-mode device on {self.fb.usb} ({st['product']})"
+            return None
+        return seen
+
     def enter_fdl(self, log: Log, timeout: float = 30) -> None:
         mark = self.console.mark()
-        self.control.enter_fdl(log)
+        self.control.enter_fdl(log, self.download_evidence(mark))
         if self.download_mode.get("console"):
             self.console.wait(mark, self.download_mode["console"], None, timeout)
         dev = self.wait_fastboot(self.download_mode.get("fastboot") or ".", timeout, log)
@@ -119,8 +136,8 @@ class BootRunner:
                 res = self.hooks.run(step.get("kind", "flash"), step["name"], req,
                                      timeout=float(step.get("timeout", 1800)), log=log)
                 brief = {k: v for k, v in res.data.items() if k != "flashed"}
-                brief["partitions"] = [f"{f['layout'].replace('partition_', '').replace('.json', '')}:{f['partition']}"
-                                       for f in res.data.get("flashed", [])]
+                brief["partitions"] = [":".join(str(x) for x in (f.get("layout"), f.get("partition")) if x)
+                                       if isinstance(f, dict) else str(f) for f in res.data.get("flashed", [])]
                 log(f"{label}: {step.get('kind', 'flash')}/{step['name']} -> {brief}")
                 # keep the console mark: the next wait can check what the bootloader printed while flashing
             else:

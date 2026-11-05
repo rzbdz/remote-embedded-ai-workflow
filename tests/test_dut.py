@@ -3,9 +3,10 @@ import os
 import stat
 from pathlib import Path
 
+import time
 import pytest
 
-from bsp.core.errors import Conflict, Forbidden, HardwareError, InvalidRequest
+from bsp.core.errors import Conflict, Forbidden, HardwareError, HardwareTimeout, InvalidRequest, NotFound
 from bsp.core.hooks import HookRunner
 from bsp.dut.boot import BootRunner
 from bsp.dut.catalog import DutRegistry
@@ -111,7 +112,7 @@ class FakeControl:
     def __init__(self, console):
         self.console, self.resets = console, 0
 
-    def enter_fdl(self, log):
+    def enter_fdl(self, log, ready=None):
         self.resets += 1
         self.console.emit("ROM: usb download handler\n")
 
@@ -222,3 +223,44 @@ def test_console_wait_nudges_a_quiet_prompt(tmp_path, monkeypatch):
     monkeypatch.setattr(hostio, "_run", fake_run)
     assert "~ # " in con.wait(mark, r"~ # ", None, timeout=5, nudge=0.3)
     assert sent and sent[0][-2:] == ["--send", " "]
+
+
+def _human(cfg=None):
+    import threading
+
+    from bsp.dut.catalog import spec_from_dict as parse_spec
+    from bsp.dut.control import Attention, make_control
+
+    att = Attention()
+    spec = parse_spec({"id": "slot-1", "host": "h", "board": "b", "console": {"alias": "slot-1"},
+                              "fastboot": {"usb": "usb:1-1"}, "control": {"backend": "human", **(cfg or {})}})
+    return make_control(spec, lambda name: att), att, threading
+
+
+def test_human_backend_waits_for_confirm():
+    ctl, att, threading = _human()
+    assert ctl.needs_human
+    lines = []
+    t = threading.Thread(target=ctl.enter_fdl, args=(lines.append,))
+    t.start()
+    for _ in range(50):
+        if att.view("slot-1"):
+            break
+        time.sleep(0.02)
+    assert att.view("slot-1")["action"] == "enter download mode"
+    assert att.confirm("slot-1", "pressed")["confirmed"] == "enter download mode"
+    t.join(5)
+    assert not t.is_alive() and att.view("slot-1") is None
+    assert any("ACTION NEEDED" in l for l in lines) and lines[-1].endswith("confirmed by a person")
+
+
+def test_human_backend_detects_the_board_itself_and_times_out():
+    ctl, att, _ = _human({"human": {"timeout_s": 0.3}})
+    lines = []
+    ctl.reset(lines.append, ready=lambda: "the boot ROM on the console")
+    assert lines[-1] == "reset: detected the boot ROM on the console"
+    with pytest.raises(HardwareTimeout) as e:
+        ctl.reset(lines.append, ready=lambda: None)
+    assert "bsp dut confirm slot-1" in e.value.hint
+    with pytest.raises(NotFound):
+        att.confirm("slot-1")                        # nothing pending any more

@@ -7,6 +7,7 @@ Addresses use the documentation range 192.0.2.0/24. The test suite runs against 
 
 | path | read by | what |
 |---|---|---|
+| `bsp.yaml` | all | site settings: which packs to use |
 | `remotes.json` | CLI | board hosts: url, fallback urls, ssh target |
 | `hosts/<id>.yaml` | bsp-hostd | modules of one board host |
 | `deploy/<id>.env` | `deploy/deploy.sh <id>` | how to reach and install a host |

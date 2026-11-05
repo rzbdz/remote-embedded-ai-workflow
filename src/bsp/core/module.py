@@ -21,6 +21,7 @@ class ModuleContext:
     state_dir: Path      # writable runtime state (overlays, caches)
     config_dir: Path     # directory of the host config file (resolve relative paths against it)
     jobs: JobManager | None = None
+    port: int = 8765     # where this host's API listens (for helpers that call back)
     # in-process service registry: modules publish objects others may use
     # (e.g. gpio_relay publishes its service; the dut module drives it)
     services: dict[str, Any] = field(default_factory=dict)

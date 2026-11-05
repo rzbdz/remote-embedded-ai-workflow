@@ -27,10 +27,16 @@ venv/bin/pip install -q --disable-pip-version-check -e "$INSTALL_DIR/app[server]
 if [[ -f app/third_party/serial-mux/pyproject.toml ]]; then
   echo "--> serial-mux (submodule) into the bsp venv"
   venv/bin/pip install -q --disable-pip-version-check -e app/third_party/serial-mux
+elif ! command -v serial-mux >/dev/null; then
+  echo "WARNING: third_party/serial-mux is empty and serial-mux is not installed on this host:" >&2
+  echo "         serial consoles will not work. Clone bsp with --recurse-submodules and redeploy." >&2
 fi
 ln -sf "$INSTALL_DIR/venv/bin/bsp" /usr/local/bin/bsp
-# smtty/serial-mux on PATH only if the host has none of its own (75 keeps its install)
-for b in smtty serial-mux; do command -v $b >/dev/null || ln -sf "$INSTALL_DIR/venv/bin/$b" /usr/local/bin/$b; done
+# smtty/serial-mux on PATH only if the host has none of its own (a host-wide serial-mux install takes precedence)
+# (a dangling or bsp-made link in /usr/local/bin is replaced)
+for b in smtty serial-mux; do
+  if [[ -L /usr/local/bin/$b ]] || ! command -v $b >/dev/null; then ln -sfn "$INSTALL_DIR/venv/bin/$b" /usr/local/bin/$b; fi
+done
 
 echo "--> systemd unit"
 sed -e "s#@INSTALL_DIR@#$INSTALL_DIR#g" -e "s#@HOST_ID@#$HOST_ID#g" \

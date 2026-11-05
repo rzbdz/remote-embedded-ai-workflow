@@ -4,7 +4,9 @@ Commands are the atomic layer under `bsp dut ...` / `bsp probe`."""
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 
 from typing import Any
 
@@ -39,6 +41,9 @@ class Board:
         return BootRunner(self.spec.id, self.control, self.fastboot, self.console, mod.store, mod.hooks, expect)
 
 
+log = logging.getLogger(__name__)
+
+
 @MODULES.register("dut")
 class DutModule(Module):
     name = "dut"
@@ -71,10 +76,40 @@ class DutModule(Module):
         self.consoles = ConsoleManager(self.serial_mux, self.serial_log_dir)
         self.boards: dict[str, Board] = {}
         self._busy: dict[str, str] = {}
+        from .control import Attention
+        from .sshlogin import ConsoleLogins
+
+        self.attention = Attention(lambda topic, **d: self._event(topic, **d))
+        ctx.services["dut_attention"] = self.attention
+
+        self.logins = ConsoleLogins(config.get("ssh_console"), ctx.host_id, ctx.port, self.smtty)
         self._rebuild()
 
     def _rebuild(self) -> None:
         self.boards = {i: Board(s, self) for i, s in sorted(self.registry.all().items())}
+        self._sync_logins()
+
+    def _sync_logins(self) -> None:
+        """Keep `ssh <prefix><dut>@host` console logins in step with the registry."""
+        if not self.logins.enabled and not self.logins.last and not self._had_logins():
+            return
+        try:
+            res = self.logins.sync({i: b.console.alias for i, b in self.boards.items()})
+            if res["added"] or res["removed"] or res["renamed"]:
+                self._event("logins", **{k: res[k] for k in ("added", "removed", "renamed")})
+        except Exception as e:  # noqa: BLE001 - logins are a convenience; never block the registry
+            self.logins.last = {"error": str(e)}
+            log.warning("console logins: %s", e)
+
+    def login_list(self) -> dict[str, Any]:
+        rows = [{"login": u, "dut": d} for u, d in sorted(self.logins._ours().items())]
+        return {"enabled": self.logins.enabled, "logins": rows, "error": self.logins.last.get("error")}
+
+    def _had_logins(self) -> bool:
+        try:
+            return bool(self.logins._ours())
+        except Exception:  # noqa: BLE001
+            return False
 
     # ------------------------------------------------------------ helpers --
     def board(self, dut: str) -> Board:
@@ -127,8 +162,11 @@ class DutModule(Module):
         return {**b.spec.summary(), "sdks": self.effective_sdks(b.spec), "sdks_explicit": bool(b.spec.sdks),
                 "origin": self.registry.origin(dut), "lease": self.leases.view(dut),
                 "busy": self._busy.get(dut), "fastboot": fb,
-                "stage": _stage(fb, self.socs.download_mode(b.spec.soc).get("fastboot")),
-                "control_state": ctl, "console_tail": tail}
+                "stage": ("needs-human" if self.attention.view(dut)
+                          else _stage(fb, self.socs.download_mode(b.spec.soc).get("fastboot"))),
+                "needs_human": self.attention.view(dut),
+                "control_state": ctl, "console_tail": tail,
+                "console_attach": f"{self.smtty} {b.console.alias}"}     # interactive: run this on the host
 
     def list(self) -> list[dict[str, Any]]:
         return [self.status(d) for d in self.boards]
@@ -150,13 +188,36 @@ class DutModule(Module):
         b = self.board(dut)
         self.leases.check(dut, lease)
         self._guard_busy(dut)
+
+        def body(log) -> dict[str, Any]:
+            if fdl:
+                b.runner(self).enter_fdl(log)
+            else:
+                mark = b.console.mark()
+                b.control.reset(log, self._reset_evidence(b, mark))
+            self._event("reset", dut=dut, fdl=fdl)
+            return {"dut": dut, "fdl": fdl, "fastboot": b.fastboot.state()}
+
+        if b.control.needs_human:          # may wait minutes for a person: run as a job
+            job = self._start_job(dut, "reset (waiting for a person)", body, kind="reset")
+            return {"dut": dut, "fdl": fdl, "job": job.id, "needs_human": True, "host": self.ctx.host_id}
         lines: list[str] = []
-        if fdl:
-            b.runner(self).enter_fdl(lines.append)
-        else:
-            b.control.reset(lines.append)
-        self._event("reset", dut=dut, fdl=fdl)
-        return {"dut": dut, "fdl": fdl, "log": lines, "fastboot": b.fastboot.state()}
+        out = body(lines.append)
+        return {**out, "log": lines}
+
+    def _reset_evidence(self, b: "Board", mark):
+        """For a plain reset: the SoC's boot-ROM fingerprint appearing on the console."""
+        fps = [re.compile(f) for f in (self.socs.get(b.spec.soc) or {}).get("fingerprint", [])] if b.spec.soc else []
+
+        def seen() -> str | None:
+            text = b.console.read_since(mark) if fps else ""
+            hit = next((f.pattern for f in fps if f.search(text)), None)
+            return f"the boot ROM on the console (/{hit}/)" if hit else None
+        return seen if fps else None
+
+    def confirm(self, dut: str, note: str) -> dict[str, Any]:
+        self.board(dut)
+        return self.attention.confirm(dut, note or "")
 
     def boot(self, dut: str, sdk: str, method: str, variant: str | None, lease: str | None) -> dict[str, Any]:
         b = self.board(dut)
@@ -359,7 +420,12 @@ class DutModule(Module):
             cmd("dut.reset", "Reset the DUT via its control backend; by default waits until it is in FDL",
                 self.reset,
                 [DUT, LEASE, Param("fdl", "boolean", "enter/expect FDL download mode", required=False, default=True)],
-                render=lambda r: "\n".join(r["log"]) + f"\nfastboot: {r['fastboot']}"),
+                render=lambda r: (f"{r['dut']}: waiting for a person, job {r['job']}" if r.get("job")
+                                  else "\n".join(r["log"]) + f"\nfastboot: {r['fastboot']}")),
+            cmd("dut.confirm", "Tell a waiting reset/boot that the requested manual action is done "
+                "(human control backend)", self.confirm,
+                [DUT, Param("note", help="what you did, for the log", required=False, default="")],
+                render=lambda r: f"{r['dut']}: confirmed '{r['confirmed']}' after {r['waited_s']}s"),
             cmd("dut.boot", "Boot an SDK: load = fastboot RAM boot, download = flash to media",
                 self.boot,
                 [DUT, Param("sdk", help="sdk instance (bsp sdk list)", positional=False),
@@ -403,6 +469,11 @@ class DutModule(Module):
                  Param("fdl", help="strapped | button", required=False, positional=False, choices=["strapped", "button"]),
                  Param("fdl_pin", help="header pin of the FDL line (fdl=button)", required=False, positional=False)],
                 render=_render_status),
+            cmd("dut.logins", "ssh console logins on this host: `ssh <login>@<host>` opens that DUT's console",
+                self.login_list, mutating=False,
+                render=lambda r: ("\n".join(f"{x['login']:<24} -> {x['dut']}" for x in r["logins"])
+                                  or "no console logins (modules.dut.ssh_console.enabled is off)")
+                + (f"\nlast sync error: {r['error']}" if r.get("error") else "")),
             cmd("dut.export", "All DUT specs on this host (save into <site>/duts/ to make them static)",
                 self.export, mutating=False,
                 render=lambda r: __import__("yaml").safe_dump(r, sort_keys=False, allow_unicode=True)),

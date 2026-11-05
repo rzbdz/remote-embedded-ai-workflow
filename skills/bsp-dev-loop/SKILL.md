@@ -93,6 +93,23 @@ bsp dut log <dut> --grep <regex>          # passive: recent console lines, no ke
 
 One command per call; the console is the board's serial shell.
 
+## Boards reset by a person (control backend `human`)
+
+Some boards have no reset wiring: `bsp dut status` shows `control: {'backend': 'human', ...}`
+(often slots made with `bsp dut bind`). On those, `bsp dut reset` and `bsp dut boot` stop and
+ask a person to press RESET (or to enter download mode), and **block until it is done**:
+
+1. Start them **in the background** (your tool's background mode, or `... &` with output to a
+   file), never in the foreground — otherwise you are stuck until the person acts.
+2. Tell the user exactly what the job printed after `ACTION NEEDED:` (e.g. "press RESET on
+   slot-1"). `bsp dut list` shows such boards as stage `needs-human`.
+3. When the user says it is done, run `bsp dut confirm <dut>` (optionally with a note). The job
+   may also continue by itself when bsp sees the board in download mode on the console or USB.
+4. Then read the background job's output for the result as usual.
+
+If the user says the reset happened but the job then fails waiting for fastboot, the board did
+not reach download mode: ask them to retry (hold the BOOT/download button if the board has one).
+
 ## 6. Clean up (always, also after failures)
 
 ```bash
@@ -112,12 +129,22 @@ bsp sdk release <sdk>        # parks uncommitted work as a stash, restores the o
   and the site's hints.
 - Everything has `--help`: `bsp dut boot --help`, `bsp sdk build --help`.
 
+## Consoles for people
+
+`bsp dut console <dut>` without a command attaches interactively (Ctrl+] leaves; needs a
+terminal and ssh access to the host). Hosts with console logins enabled also accept
+`ssh bsp-<dut>@<host>` with no password; `bsp dut logins` prints the exact lines. Give these to
+the user rather than running them yourself.
+
 ## Managing boards (when the user asks)
 
 `bsp probe --yes` discovers new boards (`-r <host>` for one host): reset line, console, USB port,
 SoC (from its boot ROM) and identity. Then `bsp dut rename <old> <new> [--console]`,
 `bsp dut set <dut> --description/--sdks/--soc/--reset-pin/--usb/--fdl ...`, `bsp dut remove <dut>`,
-`bsp dut export`. Only touch boards you hold or that are free. To keep probed boards in the site
+`bsp dut export`. Only touch boards you hold or that are free. For a quick setup without GPIO
+wiring (batch flashing, debugging together with a person), bind a slot from a console and a USB
+port: `bsp dut bind <name> --console /dev/ttyUSB0 --usb usb:1-1.2 --soc <soc> [--host <host>]`;
+its resets are done by a person (see above). `bsp dut remove <name>` drops it again. To keep probed boards in the site
 configuration, save `bsp dut export` output under `<site>/duts/`.
 
 ## Debugging on a host (only when bsp cannot tell you enough)

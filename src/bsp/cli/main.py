@@ -1,12 +1,14 @@
 """`bsp` — the atomic CLI for the bsp dev loop (humans and agents alike).
 
-Client-side groups (work from any machine; no config needed):
-    bsp hosts | init                    which bsp hosts are reachable, local or remote mode
-    bsp probe                           discover boards on the host(s), register them
-    bsp dut list|status|acquire|reset|boot|console|log|release|add|remove
+Client-side groups:
+    bsp hosts | init                    which board hosts are reachable (local or remote mode)
+    bsp probe                           discover boards on the host(s) and register them
+    bsp dut list|status|log|acquire|release|reset|boot|console|add|remove|rename|set|export
                                         boards, routed to whichever host owns them
-    bsp sdk list|show|status|acquire|release|build|job|jobs|plan
-                                        SDK instances on build servers (lease, task branch, build)
+    bsp sdk list|show|status|plan|acquire|release|build|job|jobs|exec|get|put
+                                        SDK targets on build servers (lease, task branch, build)
+    bsp install                         write ./SKILL.md for AI agents working in this directory
+    bsp hints                           hints from the configuration (packs, site)
     bsp remote list|add|remove|use|show manage known hosts (~/.config/bsp/remotes.json)
 
 Host-level groups are fetched from the host and passed through
@@ -225,6 +227,10 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
 
     # ---------------- passthrough to host commands ----------------
+    if rest[0] in ("watch", "tools") and any(a in ("-h", "--help") for a in rest[1:]):
+        print({"watch": "usage: bsp [-r HOST] watch\n\nStream live events (GPIO changes, leases, boots, jobs) from the host(s) until Ctrl-C.",
+               "tools": "usage: bsp [-r HOST] tools\n\nPrint the host's AI tool schemas (Anthropic format) as JSON."}[rest[0]])
+        return EXIT_OK
     try:
         hosts = fleet.require()
     except RemoteError as e:

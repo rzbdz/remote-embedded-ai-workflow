@@ -107,7 +107,17 @@ def dut_cmd(fleet: Fleet, args, book: LeaseBook) -> tuple[Any, str]:
     if c == "reset":
         r = _ok(h, h.call("dut_reset", {"dut": dut, "lease": _lease(args, book, dut), "fdl": not args.no_fdl},
                           timeout=120))
+        if r.get("job"):                 # human backend: a person has to act; follow the job
+            out = sys.stderr if args.json else sys.stdout
+            print(f"{dut} @ {h.id}: reset needs a person, job {r['job']} "
+                  f"(confirm with `bsp dut confirm {dut}`)", file=out, flush=True)
+            if args.no_wait:
+                return r, f"follow with: bsp job get {r['job']} -r {h.id} --wait 30"
+            return follow_job(h, r["job"], out, args.timeout)
         return r, "\n".join(r["log"]) + f"\nfastboot: {r['fastboot']}"
+    if c == "confirm":
+        r = _ok(h, h.call("dut_confirm", {"dut": dut, "note": " ".join(args.note or [])}))
+        return r, f"{dut}: confirmed '{r['confirmed']}' after {r['waited_s']}s; the waiting job continues"
     if c == "boot":
         r = _ok(h, h.call("dut_boot", {"dut": dut, "sdk": args.sdk, "method": args.method,
                                         "variant": args.variant, "lease": _lease(args, book, dut)}))
@@ -176,7 +186,8 @@ def _attach(h: HostHandle, dut: str, args) -> tuple[Any, str]:
         raise InvalidRequest("interactive console needs a terminal", hint=f"run one command: bsp dut console {dut} 'CMD'")
     ssh = shutil.which("ssh") or "ssh"
     print(f"attaching to {dut} console ({st['console']} on {h.id}); Ctrl+] detaches", file=sys.stderr)
-    rc = subprocess.call([ssh, "-t", target, f"smtty {st['console']}"])
+    cmd = st.get("console_attach") or f"smtty {st['console']}"      # host-reported smtty path
+    rc = subprocess.call([ssh, "-t", target, cmd])
     return {"rc": rc}, ""
 
 
@@ -188,6 +199,45 @@ def export(fleet: Fleet, args) -> tuple[Any, str]:
         if r.get("ok"):
             out[h.id] = r["result"]["duts"]
     return out, yaml.safe_dump(out, sort_keys=False, allow_unicode=True)
+
+
+def logins(fleet: Fleet, args) -> tuple[Any, str]:
+    """`ssh <login>@<host>` lines for every DUT console login, across hosts."""
+    rows, off = [], []
+    for h, r in fleet.fan("dut_logins"):
+        if not r.get("ok"):
+            continue
+        res = r["result"]
+        addr = (h.remote.ssh or "").split("@")[-1] or h.remote.url.split("//")[-1].split(":")[0]
+        if not res.get("enabled"):
+            off.append(h.id)
+        for x in res.get("logins", []):
+            rows.append({"host": h.id, "dut": x["dut"], "ssh": f"ssh {x['login']}@{addr}"})
+    lines = [f"{x['dut']:<20} {x['ssh']}" for x in rows]
+    if off:
+        lines.append(f"(console logins are off on: {', '.join(off)}; enable modules.dut.ssh_console in the host config)")
+    return rows, "\n".join(lines) or "no console logins"
+
+
+def dut_bind(fleet: Fleet, args) -> tuple[Any, str]:
+    """A DUT made of a console and a USB download port; a person does the resets."""
+    hs = fleet.require()
+    if args.host:
+        hs = [h for h in hs if h.id == args.host]
+        if not hs:
+            raise RemoteError(f"host {args.host!r} not reachable", hint=f"reachable: {', '.join(h.id for h in fleet.hosts())}")
+    elif len(hs) > 1:
+        raise InvalidRequest("several board hosts are reachable", hint=f"pass --host ({', '.join(h.id for h in hs)})")
+    h = hs[0]
+    console = {"alias": args.dut, "device": args.console} if args.console.startswith("/dev/") else {"alias": args.console}
+    spec = {"id": args.dut, "host": h.id, "board": args.board, "soc": args.soc, "description": args.description
+            or "bound slot (console + USB, manual reset)", "console": console, "fastboot": {"usb": args.usb},
+            "control": {"backend": "human", "fdl": {"strategy": args.fdl}},
+            "sdks": [s for s in args.sdks.split(",") if s]}
+    r = _ok(h, h.call("dut_add", {"spec": json.dumps(spec), "replace": args.replace}, timeout=120))
+    return r, (f"bound {args.dut} on {h.id}: console {args.console}, {args.usb}, resets by a person\n"
+               f"reset/boot it in the background; when asked, reset the board and run `bsp dut confirm {args.dut}`\n"
+               + _status_text(r))
 
 
 def dut_add(fleet: Fleet, args) -> tuple[Any, str]:
@@ -291,6 +341,8 @@ def _status_text(d: dict[str, Any]) -> str:
     return "\n".join([
         f"{d['id']} @ {d['host']}: {d['board']} ({d['soc']}) — {d['description']}",
         f"  stage    : {d['stage']}" + (f"  busy: {d['busy']}" if d.get("busy") else ""),
+        *([f"  ACTION NEEDED: {d['needs_human']['message']} "
+           f"(waiting {d['needs_human']['waiting_s']}s; then `bsp dut confirm {d['id']}`)"] if d.get("needs_human") else []),
         f"  lease    : {l['holder']} ({l['expires_in_s']}s left)" if l else "  lease    : free",
         f"  fastboot : {d['fastboot'] or 'not on bus'} (usb {d['usb']})",
         f"  control  : {d['control_state']}",
@@ -322,7 +374,8 @@ def add_parsers(sub) -> None:
     dl.add_argument("--soc", help="only this SoC (as named in the SoC profiles)")
     dl.add_argument("--sdk", help="only DUTs that can run this SDK")
     dl.add_argument("--free", action="store_true", help="only DUTs nobody leases")
-    ds.add_parser("export", help="all DUT specs (YAML, ready for configs/duts/)")
+    ds.add_parser("export", help="all DUT specs as YAML, ready to save under <site>/duts/")
+    ds.add_parser("logins", help="ssh console logins: `ssh bsp-<dut>@<host>` opens a DUT console (no password)")
     for name, hlp in (("status", "stage, lease, fastboot, control lines, console tail"),
                       ("log", "recent console lines (passive)")):
         x = ds.add_parser(name, help=hlp)
@@ -344,6 +397,24 @@ def add_parsers(sub) -> None:
     rs.add_argument("dut")
     rs.add_argument("--no-fdl", action="store_true", help="plain reset, do not wait for FDL")
     rs.add_argument("--lease")
+    rs.add_argument("--no-wait", action="store_true", help="human backend: return the job id instead of waiting")
+    rs.add_argument("--timeout", type=float, default=1800, help="how long to follow a waiting reset job (s)")
+    cf = ds.add_parser("confirm", help="tell a waiting reset/boot that you did what it asked (human backend)")
+    cf.add_argument("dut")
+    cf.add_argument("note", nargs="*", help="optional note for the log, e.g. 'pressed reset'")
+    bd = ds.add_parser("bind", help="register a board slot from a console + USB port only (no GPIO): "
+                                    "resets are done by a person (human backend)")
+    bd.add_argument("dut", help="name for the slot, e.g. flash-slot-1")
+    bd.add_argument("--console", required=True, help="serial-mux alias or tty (/dev/ttyUSB0)")
+    bd.add_argument("--usb", required=True, help="fastboot USB selector, e.g. usb:1-1.2 (see `fastboot devices -l`)")
+    bd.add_argument("--soc", help="SoC id (packs/*/socs); enables download-mode auto-detection")
+    bd.add_argument("--board", default="", help="board model, free text")
+    bd.add_argument("--description", default="")
+    bd.add_argument("--sdks", default="", help="comma list (default: every SDK of its SoC)")
+    bd.add_argument("--fdl", choices=["strapped", "button"], default="strapped",
+                    help="strapped: a reset enters download mode; button: the person also holds BOOT/download")
+    bd.add_argument("--host", help="board host the console and USB are attached to (needed with several hosts)")
+    bd.add_argument("--replace", action="store_true", help="overwrite an existing DUT with this name")
     b = ds.add_parser("boot", help="boot an SDK: --method load (RAM boot) | download (flash)")
     b.add_argument("dut")
     b.add_argument("--sdk", required=True)
@@ -397,6 +468,10 @@ def run(fleet: Fleet, args, book: LeaseBook):
         return dut_list(fleet, args)
     if args.dut_cmd == "add":
         return dut_add(fleet, args)
+    if args.dut_cmd == "bind":
+        return dut_bind(fleet, args)
     if args.dut_cmd == "export":
         return export(fleet, args)
+    if args.dut_cmd == "logins":
+        return logins(fleet, args)
     return dut_cmd(fleet, args, book)

@@ -13,7 +13,7 @@ class HostConfig:
     path: Path
     host_id: str
     description: str = ""
-    bind: str = "0.0.0.0"
+    bind: str = "127.0.0.1"
     port: int = 8765
     state_dir: Path = Path("/var/lib/bsp")
     auth_token: str | None = None
@@ -39,7 +39,7 @@ class HostConfig:
             path=p,
             host_id=host.get("id", p.stem),
             description=host.get("description", ""),
-            bind=os.environ.get("BSP_BIND") or srv.get("bind", "0.0.0.0"),
+            bind=os.environ.get("BSP_BIND") or srv.get("bind", "127.0.0.1"),
             port=int(os.environ.get("BSP_PORT") or srv.get("port", 8765)),
             state_dir=state_dir,
             auth_token=os.environ.get("BSP_TOKEN") or srv.get("auth_token") or None,

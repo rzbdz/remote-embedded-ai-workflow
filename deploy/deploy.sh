@@ -62,7 +62,10 @@ if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
 fi
 
 echo "==> shipping $REV to $REMOTE:$INSTALL_DIR"
-git ls-files -z --recurse-submodules | tar --null -czf - -T - \
+# --allow-dirty also ships new files that are not committed yet (but never ignored ones)
+{ git ls-files -z --recurse-submodules
+  if [[ $ALLOW_DIRTY == 1 ]]; then git ls-files -z --others --exclude-standard; fi; } \
+  | tar --null -czf - -T - \
   | rsh "set -e; mkdir -p '$INSTALL_DIR'; rm -rf '$INSTALL_DIR/app.new'; mkdir '$INSTALL_DIR/app.new'; tar -xzf - -C '$INSTALL_DIR/app.new'; echo '$REV' > '$INSTALL_DIR/app.new/REVISION'"
 
 echo "==> shipping site $SITE"

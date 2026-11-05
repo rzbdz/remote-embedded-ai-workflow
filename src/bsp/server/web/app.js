@@ -57,7 +57,7 @@
     if (be.degraded) {
       const le = be.last_error || {};
       ban.hidden = false;
-      ban.textContent = `硬件调用超时（${be.hung_calls} 次，最近：${le.op || ''} ${JSON.stringify(le.args || [])}）。内核 GPIO/pinctrl 调用被阻塞，可能需要重启主控机。`;
+      ban.textContent = `Hardware calls timed out (${be.hung_calls}×, last: ${le.op || ''} ${JSON.stringify(le.args || [])}). Kernel GPIO/pinctrl calls are blocked; the board host may need a reboot.`;
     } else {
       ban.hidden = true;
     }
@@ -75,7 +75,7 @@
   function ledOf(p) {
     if (p.error) return ['e', '!', p.error.message];
     const l = p.line;
-    if (!l || !l.claimed) return ['u', '·', '未占用 (unclaimed)'];
+    if (!l || !l.claimed) return ['u', '·', 'unclaimed'];
     if (l.direction === 'in') return ['z', 'Z', `input, reads ${l.value}`];
     return l.value ? ['h', 'H', 'output high'] : ['l', 'L', 'output low'];
   }
@@ -228,8 +228,8 @@
         <span class="k">pinmux</span><span class="v">${mux ? `${esc(mux.mux_owner || 'unclaimed')}${mux.function ? ' · ' + esc(mux.function) : ''}` : 'n/a'}</span>
         ${p.last_action ? `<span class="k">last</span><span class="v">${esc(p.last_action.action)} @ ${new Date(p.last_action.ts * 1000).toLocaleTimeString()}</span>` : ''}
       </div>
-      ${mux?.conflict ? `<div class="alert warn">该 pad 当前复用为 <b>${esc(mux.function || mux.mux_owner)}</b>（${esc(mux.mux_owner)}），GPIO 写入不会到达引脚。需要勾选 force 才能写。</div>` : ''}
-      ${p.protected ? `<div class="alert err">该引脚在主机配置中被保护（protected），禁止驱动。</div>` : ''}
+      ${mux?.conflict ? `<div class="alert warn">This pad is muxed to <b>${esc(mux.function || mux.mux_owner)}</b> (${esc(mux.mux_owner)}); GPIO writes will not reach the pin. Tick <i>force</i> to write anyway.</div>` : ''}
+      ${p.protected ? `<div class="alert err">This pin is protected in the host configuration and cannot be driven.</div>` : ''}
       ${p.error ? `<div class="alert err">${esc(errText(p.error))}</div>` : ''}
       ${ch.description ? `<div class="ins-sub">${esc(ch.description)}</div>` : ''}`;
   }
@@ -268,20 +268,20 @@
     force.type = 'checkbox';
     force.id = 'force';
     const F = () => ({ force: force.checked || undefined });
-    box.innerHTML = '<div class="section-title">控制</div>';
+    box.innerHTML = '<div class="section-title">Control</div>';
 
     if (ch.mode === 'gpio') {
       box.append(row(
         btn('HIGH', 'hi', () => run('gpio.set', { target: t, level: 'high', ...F() })),
         btn('LOW', 'lo', () => run('gpio.set', { target: t, level: 'low', ...F() })),
-        btn('INPUT', 'z', () => run('gpio.set', { target: t, level: 'input', ...F() }), '切换为输入（高阻 Hi-Z）'),
+        btn('INPUT', 'z', () => run('gpio.set', { target: t, level: 'input', ...F() }), 'Switch to input (Hi-Z)'),
       ));
       const lvl = document.createElement('select');
       lvl.innerHTML = '<option value="low">low</option><option value="high">high</option>';
       const ms = numInput('pulse-ms', 100);
       box.append(row(
         labelled('pulse', lvl), labelled('ms', ms),
-        btn('PULSE', 'primary', () => run('gpio.pulse', { target: t, level: lvl.value, ms: +ms.value, ...F() }), '输出脉冲后恢复原状态'),
+        btn('PULSE', 'primary', () => run('gpio.pulse', { target: t, level: lvl.value, ms: +ms.value, ...F() }), 'Pulse, then restore the previous state'),
       ));
     } else if (ch.mode === 'relay') {
       box.append(row(
@@ -292,27 +292,27 @@
       const ms = numInput('pulse-ms', 200);
       box.append(row(
         labelled('ms', ms),
-        btn('PULSE', 'primary', () => run('relay.pulse', { target: t, ms: +ms.value, ...F() }), 'ON 持续 ms 后 OFF'),
+        btn('PULSE', 'primary', () => run('relay.pulse', { target: t, ms: +ms.value, ...F() }), 'On for ms, then off'),
       ));
     } else if (ch.mode === 'button') {
-      const hold = btn('HOLD 按住', 'hold', () => {}, '按住鼠标 = 按下，松开 = 释放');
+      const hold = btn('HOLD', 'hold', () => {}, 'Mouse down = press, mouse up = release');
       let down = false;
       const press = (e) => { e.preventDefault(); down = true; hold.classList.add('down'); run('button.press', { target: t, ...F() }); };
       const release = () => { if (!down) return; down = false; hold.classList.remove('down'); run('button.release', { target: t, ...F() }); };
       hold.addEventListener('pointerdown', press);
       ['pointerup', 'pointerleave', 'pointercancel'].forEach((ev) => hold.addEventListener(ev, release));
       box.append(row(
-        btn('PRESS', 'hi', () => run('button.press', { target: t, ...F() }), '按下并保持'),
-        btn('RELEASE', 'lo', () => run('button.release', { target: t, ...F() }), '释放（开漏 = 高阻）'),
+        btn('PRESS', 'hi', () => run('button.press', { target: t, ...F() }), 'Press and hold'),
+        btn('RELEASE', 'lo', () => run('button.release', { target: t, ...F() }), 'Release (open drain = Hi-Z)'),
         hold,
       ));
       const ms = numInput('click-ms', 200);
       box.append(row(
         labelled('ms', ms),
-        btn('CLICK', 'primary', () => run('button.click', { target: t, ms: +ms.value, ...F() }), '按下 ms 后释放'),
+        btn('CLICK', 'primary', () => run('button.click', { target: t, ms: +ms.value, ...F() }), 'Press for ms, then release'),
       ));
     }
-    const freeBtn = btn('FREE', 'ghost', () => run('gpio.free', { target: t }), '释放 GPIO（输入 + unexport）');
+    const freeBtn = btn('FREE', 'ghost', () => run('gpio.free', { target: t }), 'Free the GPIO (input + unexport)');
     const extra = [freeBtn];
     if (p.pinmux?.conflict) extra.unshift(labelled('force', force));
     box.append(row(...extra));
@@ -322,14 +322,14 @@
     const ch = p.channel || {};
     const t = p.target;
     const box = $('#ins-cfg');
-    box.innerHTML = '<div class="section-title">通道配置</div>';
+    box.innerHTML = '<div class="section-title">Channel configuration</div>';
     const seg = document.createElement('div');
     seg.className = 'seg';
     for (const m of ['gpio', 'relay', 'button']) {
       const b = document.createElement('button');
       b.textContent = m;
       b.className = m + (ch.mode === m ? ' on' : '');
-      b.title = { gpio: '原始电平：high / low / input', relay: '继电器：on / off，可配极性与驱动', button: '按键：开漏模拟，按下拉低，释放高阻' }[m];
+      b.title = { gpio: 'Raw level: high / low / input', relay: 'Relay: on / off, configurable polarity and drive', button: 'Button: open-drain, press pulls low, release is Hi-Z' }[m];
       b.addEventListener('click', () => { if (ch.mode !== m) run('gpio.config', { target: t, mode: m }); });
       seg.appendChild(b);
     }
@@ -338,7 +338,7 @@
     const desc = Object.assign(document.createElement('input'), { value: ch.description || '' });
     const initial = document.createElement('select');
     const states = S.board.modes[ch.mode]?.states || [];
-    initial.innerHTML = `<option value="">(不处理)</option>` + states.map((s) => `<option ${ch.initial === s ? 'selected' : ''}>${s}</option>`).join('');
+    initial.innerHTML = `<option value="">(leave as is)</option>` + states.map((s) => `<option ${ch.initial === s ? 'selected' : ''}>${s}</option>`).join('');
     form.append(lab('mode'), seg);
     let al, drive;
     if (ch.mode !== 'gpio') {
@@ -346,7 +346,7 @@
       drive = document.createElement('select');
       drive.innerHTML = ['push_pull', 'open_drain'].map((d) => `<option ${ch.drive === d ? 'selected' : ''}>${d}</option>`).join('');
       form.append(lab('active_low'), al, lab('drive'), drive);
-      form.insertAdjacentHTML('beforeend', '<span class="hint">open_drain：inactive = 高阻输入；push_pull：inactive 主动驱动反电平</span>');
+      form.insertAdjacentHTML('beforeend', '<span class="hint">open_drain: inactive = Hi-Z input; push_pull: inactive actively drives the opposite level</span>');
     }
     form.append(lab('initial'), initial, lab('description'), desc);
     box.append(form, row(
@@ -355,30 +355,30 @@
         if (al) { args.active_low = al.checked; args.drive = drive.value; }
         run('gpio.config', args);
       }),
-      btn('RESET', 'ghost', () => run('gpio.config', { target: t, reset: true }), '丢弃运行时覆盖，回到主机配置文件'),
+      btn('RESET', 'ghost', () => run('gpio.config', { target: t, reset: true }), 'Drop the runtime override and return to the host configuration'),
     ));
     box.appendChild(buildAliases(p));
   }
   function buildAliases(p) {
     const box = document.createElement('div');
-    box.innerHTML = '<div class="section-title">别名 aliases</div>';
+    box.innerHTML = '<div class="section-title">Aliases</div>';
     const list = document.createElement('div');
     list.className = 'btnrow';
     for (const a of p.aliases || []) {
       const chip = document.createElement('span');
       chip.className = 'alias-chip';
       chip.innerHTML = `<span>${esc(a)}</span>`;
-      const x = btn('×', 'ghost small', () => run('gpio.alias.delete', { name: a }), '删除该别名');
+      const x = btn('×', 'ghost small', () => run('gpio.alias.delete', { name: a }), 'Delete this alias');
       chip.appendChild(x);
       list.appendChild(chip);
     }
-    if (!(p.aliases || []).length) list.insertAdjacentHTML('beforeend', '<span class="ins-sub">（无）</span>');
+    if (!(p.aliases || []).length) list.insertAdjacentHTML('beforeend', '<span class="ins-sub">(none)</span>');
     const inp = Object.assign(document.createElement('input'), { placeholder: 'DUT3/reset', spellcheck: false });
     inp.style.width = '150px';
     const add = () => { const v = inp.value.trim(); if (v) run('gpio.alias.add', { name: v, target: p.target }); };
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
-    box.append(list, row(inp, btn('ADD', 'primary', add, '绑定别名到该引脚；之后可用别名作为 target，例如 button click DUT3/reset')));
-    box.insertAdjacentHTML('beforeend', '<div class="ins-sub">别名由下游组件注册（如 DUT 管理层），本层只负责 resolve；带 / 的路径可按前缀整树删除。</div>');
+    box.append(list, row(inp, btn('ADD', 'primary', add, 'Bind an alias to this pin; use it as a target afterwards, e.g. button click DUT3/reset')));
+    box.insertAdjacentHTML('beforeend', '<div class="ins-sub">Aliases are registered by the components that own them (e.g. the DUT module); this layer only resolves them. Paths with / can be deleted by prefix.</div>');
     return box;
   }
   function lab(text) {
@@ -434,7 +434,7 @@
   function showEquiv(e) {
     const box = $('#equiv');
     if (!box || !e) return;
-    box.innerHTML = `<div class="section-title">等价命令（最近一次操作）</div>
+    box.innerHTML = `<div class="section-title">Equivalent commands (last action)</div>
       <pre>${esc(e.cli)}<button class="ghost small copy" data-copy="cli">copy</button></pre>
       <pre>${esc(e.curl)}<button class="ghost small copy" data-copy="curl">copy</button></pre>`;
     box.querySelectorAll('.copy').forEach((b) => b.addEventListener('click', () => copyText(e[b.dataset.copy])));
@@ -514,7 +514,7 @@
       if (e.key === 'ArrowUp' && S.histIdx < S.hist.length - 1) { inp.value = S.hist[++S.histIdx]; e.preventDefault(); }
       if (e.key === 'ArrowDown') { S.histIdx = Math.max(-1, S.histIdx - 1); inp.value = S.histIdx < 0 ? '' : S.hist[S.histIdx]; e.preventDefault(); }
     });
-    conWrite('bsp remote CLI — 与本机 `bsp` 命令同一套语法。输入 help 查看命令，clear 清屏，↑↓ 历史。\n');
+    conWrite('bsp remote CLI: same syntax as the local `bsp` command. Type help for commands, clear to clear, ↑↓ for history.\n');
   }
 
   // ------------------------------------------------------------------ tabs
@@ -528,7 +528,7 @@
   function renderApiTable() {
     const rows = Object.values(S.tools).map((t) =>
       `<tr><td>${esc(t.tool_name)}</td><td>${esc(t.http.method)} ${esc(t.http.path)}</td><td>${esc(t.cli)}</td><td>${esc(t.summary)}</td></tr>`).join('');
-    $('#api-table').innerHTML = `<tr><th>AI tool</th><th>HTTP</th><th>CLI</th><th>说明</th></tr>${rows}`;
+    $('#api-table').innerHTML = `<tr><th>AI tool</th><th>HTTP</th><th>CLI</th><th>Description</th></tr>${rows}`;
   }
 
   // ------------------------------------------------------------------ boot
@@ -536,7 +536,7 @@
     initTabs();
     initConsole();
     $('#token-btn').addEventListener('click', () => {
-      const v = window.prompt('API token (留空清除)', S.token || '');
+      const v = window.prompt('API token (empty to clear)', S.token || '');
       if (v === null) return;
       S.token = v.trim() || null;
       lsSet('bsp.token', S.token || '');

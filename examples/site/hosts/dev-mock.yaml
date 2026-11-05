@@ -19,3 +19,5 @@ modules:
       DUT1/reset: P11
       DUT1/power: {target: P13, tags: [dut1, power], note: demo relay}
   sdk: {}
+  dut:                       # lists duts/mock-board.yaml; no console or fastboot here
+    probe: {pulse_ms: 200}
