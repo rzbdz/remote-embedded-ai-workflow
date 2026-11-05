@@ -67,6 +67,46 @@ class BootRunner:
         dev = self.wait_fastboot(self.download_mode.get("fastboot") or ".", timeout, log)
         log(f"board in download mode on {dev['usb']} ({dev['product']})")
 
+    # ------------------------------------------------------- file boot --
+    def run_files(self, files: list[dict[str, Any]], log: Log, reset: bool = True, first_wait: float = 8.0,
+                  later_wait: float = 3.0, port_timeout: float = 20.0, stage_timeout: float = 300.0,
+                  poll: float = 0.5) -> dict[str, Any]:
+        """Boot from RAM with files given in order (e.g. FSBL, U-Boot/OpenSBI, kernel FIT): for each one
+        `stage` + `continue`, then wait for the download port to come back before the next. The first
+        wait is longer (the boot ROM hands over to FSBL, which re-enumerates). Never flashes."""
+        t0 = time.monotonic()
+        log(f"boot {self.dut_id} from {len(files)} file(s)" + ("" if reset else " (board already in download mode)"))
+        for i, f in enumerate(files, 1):
+            log(f"file {i}/{len(files)}: {f['name']} ({f['size']:,} B, sha256 {f['sha256']})")
+        if reset:
+            self.enter_fdl(log)
+        elif not self.fb.state():
+            raise HardwareError(f"{self.dut_id}: no download port on {self.fb.usb}",
+                                hint=f"put it in download mode first (`bsp dut reset {self.dut_id}`), or drop --no-reset")
+        for i, f in enumerate(files, 1):
+            label = f"file {i}/{len(files)} {f['name']}"
+            if i > 1:
+                settle = first_wait if i == 2 else later_wait
+                time.sleep(settle)
+                deadline = time.monotonic() + port_timeout
+                while not self.fb.state():
+                    if time.monotonic() > deadline:
+                        raise HardwareTimeout(
+                            f"download port {self.fb.usb} did not come back within {settle + port_timeout:g}s "
+                            f"after file {i - 1}; it may not have started",
+                            hint=f"see `bsp dut log {self.dut_id}`", details={"console_tail": "\n".join(self.console.tail(15))})
+                    time.sleep(poll)
+            ts = time.monotonic()
+            self.fb.cmd("stage", f["path"], timeout=stage_timeout)
+            try:
+                self.fb.cmd("continue", timeout=30)
+            except HardwareError:
+                pass  # the responder detaches on purpose; the next wait is the real check
+            log(f"{label}: staged and continued in {time.monotonic() - ts:.1f}s")
+        log(f"done in {time.monotonic() - t0:.1f}s")
+        return {"dut": self.dut_id, "files": [{k: f[k] for k in ("name", "sha256", "size")} for f in files],
+                "elapsed_s": round(time.monotonic() - t0, 1)}
+
     # ------------------------------------------------------------- run --
     def run(self, sdk: Instance, method: str, variant: str | None, log: Log) -> dict[str, Any]:
         plan = sdk.boot_plan(method, variant)

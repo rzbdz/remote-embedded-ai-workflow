@@ -18,6 +18,7 @@ class HostConfig:
     state_dir: Path = Path("/var/lib/bsp")
     auth_token: str | None = None
     modules: dict[str, dict[str, Any]] = field(default_factory=dict)
+    announce: dict[str, Any] | None = None   # registry this host announces itself to
 
     @property
     def config_dir(self) -> Path:
@@ -44,4 +45,16 @@ class HostConfig:
             state_dir=state_dir,
             auth_token=os.environ.get("BSP_TOKEN") or srv.get("auth_token") or None,
             modules={k: (v or {}) for k, v in (raw.get("modules") or {}).items()},
+            announce=_announce(srv.get("announce")),
         )
+
+
+def _announce(cfg: Any) -> dict[str, Any] | None:
+    """server.announce: {url, interval_s, ssh_user, addresses, token}; $BSP_REGISTRY_URL overrides url."""
+    url = os.environ.get("BSP_REGISTRY_URL")
+    if isinstance(cfg, str):
+        cfg = {"url": cfg}
+    cfg = dict(cfg or {})
+    if url:
+        cfg["url"] = url
+    return cfg if cfg.get("url") else None

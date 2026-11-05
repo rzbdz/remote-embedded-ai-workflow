@@ -26,11 +26,16 @@ How hosts are chosen without `-r`/`--url` is described in
 | `bsp dut status DUT` | Stage, lease, fastboot state, control lines, pending manual action, console tail |
 | `bsp dut log DUT [--lines N] [--grep RE]` | Recent console lines, read passively |
 | `bsp dut acquire DUT [--holder NAME] [--purpose TEXT] [--ttl S]` | Lease a board (default 3600 s, at most 24 h); the token is remembered |
+| `bsp dut renew DUT [--ttl S]` | Extend your lease from now; holder, purpose and token stay the same |
 | `bsp dut release DUT [--force]` | Release it |
 | `bsp dut reset DUT [--no-fdl] [--no-wait] [--timeout S]` | Reset into download mode and wait for it (`--no-fdl`: plain reset) |
 | `bsp dut boot DUT --sdk SDK [--method load\|download] [--variant V] [--no-wait] [--timeout S]` | Run the SDK's boot recipe; streams progress, exit code is the result |
+| `bsp dut boot DUT --files FILE… [--no-reset] [--first-wait S] [--later-wait S] [--port-timeout S] [--no-wait]` | Boot from RAM with local files in order (see [Booting local files](#booting-local-files)) |
+| `bsp dut stage DUT FILE [--no-continue] [--timeout S]` | Send a local file to the host (once, by sha256) and load it into RAM: `fastboot stage` + `continue` |
+| `bsp dut present DUT` | Whether the board's download/fastboot port is on the USB bus |
 | `bsp dut console DUT "CMD" [--expect RE] [--timeout S]` | Run one shell command on the console and print its output |
 | `bsp dut console DUT` | Attach interactively over ssh (Ctrl+] detaches) |
+| `bsp dut pipe DUT` | Raw serial-mux protocol on stdin/stdout, for programs (see [Console pipe](#console-pipe)) |
 | `bsp dut confirm DUT [NOTE]` | Tell a waiting reset/boot that the requested manual action is done |
 | `bsp dut logins` | `ssh` commands that open each board's console (if enabled on the host) |
 | `bsp dut bind NAME --console TTY\|ALIAS --usb USB [--soc SOC] [--board B] [--description D] [--sdks LIST] [--fdl strapped\|button] [--host HOST] [--replace]` | Register a board from a console and a USB port; a person does the resets |
@@ -40,7 +45,7 @@ How hosts are chosen without `-r`/`--url` is described in
 | `bsp dut remove DUT [--force]` | Forget a board |
 | `bsp dut export [--dir DIR] [--host HOST]` | Registered boards as YAML; `--dir` writes one `DIR/<id>.yaml` per board, the format of `SITE/duts/` |
 
-**Leases.** `reset`, `boot`, `console "CMD"` and `release` need your lease; `set` and `rename`
+**Leases.** `reset`, `boot`, `stage`, `console "CMD"`, `renew` and `release` need your lease; `set` and `rename`
 need it while the board is leased. The CLI passes the remembered token; in stateless mode use
 `--lease TOKEN` or `BSP_LEASE`.
 
@@ -64,11 +69,39 @@ download mode on its console or USB port (for a plain reset: the SoC's boot-ROM 
 console). If the board is not actually in download mode after a confirmation, the next step
 fails with a fastboot timeout. Scripts and agents should run such commands in the background.
 
+### Booting local files
+
+`bsp dut boot DUT --files FSBL.bin u-boot-opensbi.itb Image.itb` boots a board from RAM with
+files from your machine. Each file is sent to the board host once (by sha256; unchanged files
+are not sent again, over HTTP or the ssh tunnel), then the host puts the board into download
+mode (skip with `--no-reset`) and for each file runs `fastboot stage` + `continue` and waits for
+the download port to come back before the next one: `--first-wait` seconds after the first file
+(default 8, while the boot ROM hands over), `--later-wait` after later ones (default 3), then up
+to `--port-timeout` more (default 20). If the port does not return, the boot stops and names the
+file. It runs as a background job like `--sdk` boots, with the path and sha256 of every file in
+the job log. Nothing is flashed.
+
+Programs can do the same over HTTP: `PUT /api/v1/artifacts/<sha256>?name=FILE` with the file as
+the body (checked against the sha256; `GET` the same URL to see whether it is cached), then
+`dut_stage` or `dut_boot_files` with the sha256 values.
+
+### Console pipe
+
+`bsp dut pipe DUT` connects stdin and stdout to the board's serial-mux daemon and copies bytes
+both ways until either side closes. The bytes are serial-mux's own protocol (4-byte length,
+then JSON), so any serial-mux client can open a session through it; it is meant for programs
+such as dashboards, not for typing. On a remote host the CLI runs a small Python bridge there
+over the remote's `ssh` entry; on the host itself it connects to the socket directly. No lease
+is needed: reading is open to everyone (as with `dut log`), and input is subject to the
+console's serial-mux input gate. `bsp dut status` reports the socket as `console_socket` and
+whether the daemon is up as `console_up`.
+
 ## Discovery and hosts
 
 | Command | Purpose |
 |---|---|
 | `bsp hosts` | Reachable hosts, how they are reached, their modules and boards |
+| `bsp -r REGISTRY registry list [--all]` | Hosts that announced themselves to a registry (see [configuration.md](configuration.md#host-registry)) |
 | `bsp init` | First-run check: configuration directory, mode, hosts |
 | `bsp probe [--pins P..] [--consoles C..] [--sdks LIST] [--dry-run] [--yes] [--no-identify] [--replace]` | Discover boards (pulses GPIO lines — see [getting-started.md](getting-started.md#option-a-probe-boards-wired-to-gpio-reset-lines)) |
 | `bsp remote list\|show\|add\|remove\|use` | Manage personal host entries |

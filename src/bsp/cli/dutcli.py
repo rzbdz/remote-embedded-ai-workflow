@@ -115,14 +115,43 @@ def dut_cmd(fleet: Fleet, args, book: LeaseBook) -> tuple[Any, str]:
                 return r, f"follow with: bsp job get {r['job']} -r {h.id} --wait 30"
             return follow_job(h, r["job"], out, args.timeout)
         return r, "\n".join(r["log"]) + f"\nfastboot: {r['fastboot']}"
+    if c == "renew":
+        r = _ok(h, h.call("dut_renew", {"dut": dut, "lease": _lease(args, book, dut), "ttl": args.ttl}))
+        book.put(f"dut:{dut}", r["token"], r["expires_in_s"], host=h.id, holder=r["holder"])
+        return r, f"renewed {dut} on {h.id} for {r['holder']}: {r['expires_in_s']}s left"
+    if c == "present":
+        r = _ok(h, h.call("dut_present", {"dut": dut}))
+        return r, f"{dut}: " + (f"download port present ({r['fastboot'].get('product')})" if r["present"]
+                                else f"not on the bus ({r['usb']})")
+    if c == "stage":
+        art = upload(h, args.file, out=sys.stderr if args.json else sys.stdout)
+        r = _ok(h, h.call("dut_stage", {"dut": dut, "sha256": art["sha256"], "lease": _lease(args, book, dut),
+                                         "continue": not args.no_continue, "timeout": args.timeout},
+                          timeout=args.timeout + 60))
+        return {**r, "path": os.path.abspath(args.file)}, \
+            f"{dut}: staged {art['name']} ({art['size']:,} B, sha256 {art['sha256'][:16]}...)" \
+            + (" and continued" if r["continued"] else "")
+    if c == "pipe":
+        return _pipe(h, dut)
     if c == "confirm":
         r = _ok(h, h.call("dut_confirm", {"dut": dut, "note": " ".join(args.note or [])}))
         return r, f"{dut}: confirmed '{r['confirmed']}' after {r['waited_s']}s; the waiting job continues"
     if c == "boot":
-        r = _ok(h, h.call("dut_boot", {"dut": dut, "sdk": args.sdk, "method": args.method,
-                                        "variant": args.variant, "lease": _lease(args, book, dut)}))
         out = sys.stderr if args.json else sys.stdout
-        print(f"{dut} @ {h.id}: boot {args.sdk} [{args.method}] job {r['job']}", file=out, flush=True)
+        if bool(args.sdk) == bool(args.files):
+            raise InvalidRequest("give either --sdk SDK or --files F1 [F2 ...]",
+                                 hint="--sdk runs the SDK's boot recipe; --files boots these local files in order")
+        if args.files:
+            arts = [upload(h, f, out) for f in args.files]
+            r = _ok(h, h.call("dut_boot_files", {
+                "dut": dut, "files": ",".join(a["sha256"] for a in arts), "lease": _lease(args, book, dut),
+                "reset": not args.no_reset, "first_wait": args.first_wait, "later_wait": args.later_wait,
+                "port_timeout": args.port_timeout}))
+            print(f"{dut} @ {h.id}: boot {len(arts)} file(s) job {r['job']}", file=out, flush=True)
+        else:
+            r = _ok(h, h.call("dut_boot", {"dut": dut, "sdk": args.sdk, "method": args.method,
+                                            "variant": args.variant, "lease": _lease(args, book, dut)}))
+            print(f"{dut} @ {h.id}: boot {args.sdk} [{args.method}] job {r['job']}", file=out, flush=True)
         if args.no_wait:
             return r, f"follow with: bsp job get {r['job']} -r {h.id} --wait 30"
         return follow_job(h, r["job"], out, args.timeout)
@@ -169,6 +198,71 @@ def follow_job(h: HostHandle, job: str, out, timeout: float) -> tuple[Any, str]:
         e = v.get("error") or {}
         raise CallError({**e, "message": f"job {job} failed: {e.get('message')}"}, h.id)
     return v, f"job {job} succeeded in {v['elapsed_s']}s"
+
+
+def _sha256(path: str) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def upload(h: HostHandle, path: str, out=None) -> dict[str, Any]:
+    """Make sure the host has this file in its artifact cache (by sha256); send it only if missing."""
+    from urllib.parse import quote
+
+    if not os.path.isfile(path):
+        raise InvalidRequest(f"no such file: {path}")
+    size = os.path.getsize(path)
+    if not size:
+        raise InvalidRequest(f"file is empty: {path}")
+    sha, name = _sha256(path), os.path.basename(path)
+    have = _ok(h, h.get(f"/api/v1/artifacts/{sha}"))
+    if not have.get("present"):
+        t0 = time.time()
+        _ok(h, h.transport.upload(f"/api/v1/artifacts/{sha}?name={quote(name)}", path,
+                                  timeout=max(120.0, size / (1 << 20) * 3)))
+        if out:
+            print(f"  sent {name} to {h.id} ({size:,} B in {time.time() - t0:.1f}s)", file=out, flush=True)
+    elif out:
+        print(f"  {name} already on {h.id} (sha256 {sha[:12]})", file=out, flush=True)
+    return {"sha256": sha, "name": name, "size": size, "path": os.path.abspath(path)}
+
+
+class Quiet:
+    """A result that prints nothing (the command wrote its own output); `rc` is the exit code."""
+
+    def __init__(self, rc: int):
+        self.rc = rc
+
+
+def _pipe(h: HostHandle, dut: str) -> tuple[Any, str]:
+    """Raw serial-mux protocol on stdin/stdout, for programs (boardlab's console view uses it)."""
+    import subprocess
+
+    from . import pipe
+    from .transport import HttpTransport, _ssh_base
+
+    st = _ok(h, h.call("dut_status", {"dut": dut}))
+    sock = st.get("console_socket")
+    if not sock:
+        raise InvalidRequest(f"{h.id} does not report console sockets", hint="update bsp on that host")
+    if not st.get("console_up"):
+        raise BspError(f"console {st['console']} of {dut} is not running on {h.id}",
+                       hint=f"see `bsp dut status {dut}`; the host starts consoles it knows at service start")
+    loopback = isinstance(h.transport, HttpTransport) and \
+        re.match(r"https?://(127\.0\.0\.1|localhost|\[::1\])(:|/|$)", h.transport.url)
+    if loopback and os.path.exists(sock):
+        return Quiet(pipe.local(sock)), None
+    target = getattr(h.transport, "target", None) or h.remote.ssh
+    if not target:
+        raise InvalidRequest(f"no ssh route to {h.id} for a console pipe",
+                             hint=f"add one: bsp remote add {h.remote.name} {h.remote.url} --ssh root@<host>")
+    sys.stdout.flush()
+    return Quiet(subprocess.call(_ssh_base(target) + [pipe.remote_command(sock)])), None
 
 
 def _attach(h: HostHandle, dut: str, args) -> tuple[Any, str]:
@@ -396,6 +490,22 @@ def add_parsers(sub) -> None:
         if name == "log":
             x.add_argument("--lines", type=int, default=40)
             x.add_argument("--grep")
+    pr = ds.add_parser("present", help="whether the DUT's download/fastboot port is on the USB bus")
+    pr.add_argument("dut")
+    pp = ds.add_parser("pipe", help="raw serial-mux protocol on stdin/stdout for programs (no lease; "
+                                    "input follows the console's own gate)")
+    pp.add_argument("dut")
+    sg = ds.add_parser("stage", help="send a local file to the host (once, by sha256) and load it into RAM: "
+                                     "fastboot stage + continue")
+    sg.add_argument("dut")
+    sg.add_argument("file")
+    sg.add_argument("--no-continue", action="store_true", help="only stage, do not run `fastboot continue`")
+    sg.add_argument("--timeout", type=float, default=300, help="seconds for the stage")
+    sg.add_argument("--lease")
+    rn_ = ds.add_parser("renew", help="extend your lease (same token, holder and purpose)")
+    rn_.add_argument("dut")
+    rn_.add_argument("--ttl", type=int, default=3600)
+    rn_.add_argument("--lease")
     a = ds.add_parser("acquire", help="lease a DUT (token remembered for later commands)")
     a.add_argument("dut")
     a.add_argument("--holder", default=os.environ.get("BSP_HOLDER") or os.environ.get("USER") or "anonymous")
@@ -428,9 +538,17 @@ def add_parsers(sub) -> None:
                     help="strapped: a reset enters download mode; button: the person also holds BOOT/download")
     bd.add_argument("--host", help="board host the console and USB are attached to (needed with several hosts)")
     bd.add_argument("--replace", action="store_true", help="overwrite an existing DUT with this name")
-    b = ds.add_parser("boot", help="boot an SDK: --method load (RAM boot) | download (flash)")
+    b = ds.add_parser("boot", help="boot an SDK (--method load: RAM boot | download: flash), "
+                                   "or local files in order (--files, RAM boot)")
     b.add_argument("dut")
-    b.add_argument("--sdk", required=True)
+    b.add_argument("--sdk")
+    b.add_argument("--files", nargs="+", metavar="FILE",
+                   help="boot these local files in order, e.g. FSBL.bin u-boot-opensbi.itb Image.itb")
+    b.add_argument("--no-reset", action="store_true", help="--files: the board is already in download mode")
+    b.add_argument("--first-wait", type=float, default=8, help="--files: seconds after the first file (default 8)")
+    b.add_argument("--later-wait", type=float, default=3, help="--files: seconds after later files (default 3)")
+    b.add_argument("--port-timeout", type=float, default=20,
+                   help="--files: then poll this long for the download port (default 20)")
     b.add_argument("--method", default="load", choices=["load", "download"])
     b.add_argument("--variant", help="e.g. uboot-only")
     b.add_argument("--no-wait", action="store_true")

@@ -116,9 +116,10 @@ class Fleet:
         local = rs.get("local")
         if local:
             try:
-                connect(local, quick=0.5)
-                self.mode = "local"
-                return [local]
+                h = connect(local, quick=0.5)
+                if "dut" in h.status.get("modules", {}):     # a registry-only hostd drives no boards
+                    self.mode = "local"
+                    return [local]
             except Unreachable:
                 pass
         default = self.store.default_name
@@ -142,6 +143,8 @@ class Fleet:
                 for h in pool.map(one, cands):
                     if h:
                         out.append(h)
+            if self.store.registry_error:
+                self.errors["registry"] = self.store.registry_error
             self._hosts = out
         return self._hosts
 

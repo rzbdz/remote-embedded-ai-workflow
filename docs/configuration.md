@@ -106,6 +106,39 @@ modules:
 Relative paths are resolved against the directory of the host file. Environment variables
 `BSP_BIND`, `BSP_PORT`, `BSP_STATE_DIR` and `BSP_TOKEN` override the `server` keys.
 
+### Host registry
+
+A board host that gets its address from DHCP, or sits behind NAT, can tell a registry where it
+is instead of being listed by hand in every `remotes.json`. The registry is a `bsp-hostd` with
+the `registry` module, typically on a machine every host and client can reach:
+
+```yaml
+# hosts/registry.yaml — a registry needs no other module
+host: {id: registry}
+server: {bind: 0.0.0.0, port: 8765, state_dir: /var/lib/bsp, auth_token: null}
+modules:
+  registry:
+    stale_s: 300          # hosts not heard from for this long are no longer offered to clients
+    trust_proxy: false    # true behind a reverse proxy: take the address from X-Forwarded-For
+```
+
+Each board host announces itself with `server.announce`:
+
+```yaml
+server:
+  announce:
+    url: http://registry.example.internal:8765
+    interval_s: 60        # how often (default 60)
+    ssh_user: root        # clients then get an ssh route for tunnels and `bsp dut pipe`
+    addresses: []         # extra addresses to offer; default: this machine's own
+    token: null           # the registry's API token, if it has one (or $BSP_REGISTRY_TOKEN)
+```
+
+The registry records the address each announcement came from and offers it first, so a host
+behind NAT is reached at the address others see. `$BSP_REGISTRY_URL` sets `announce.url` from
+the environment. `bsp status` on the host shows the last announcement; on the registry, `bsp
+registry list` (and `GET /api/v1/registry/list`) shows the hosts.
+
 ### Console logins
 
 With `modules.dut.ssh_console.enabled: true`, the host keeps one system user per board, named
@@ -163,7 +196,13 @@ Probed and bound boards are stored on their host; `bsp dut export --dir DIR` wri
 ```
 
 The client tries `url`, then each fallback, then HTTP tunnelled through `ssh` (the host's API
-on its loopback interface, reached with `ssh … curl`). `<site>/remotes.json` is shared by all
+on its loopback interface, reached with `ssh … curl`).
+
+With `"registry": "http://registry.example.internal:8765"` at the top level (or
+`$BSP_REGISTRY`), the client also lists every host that announced itself there recently (see
+[Host registry](#host-registry)). A host listed in the file as well keeps its token, ssh route
+and description, and is tried at its announced addresses first. A registry that cannot be read
+is reported by `bsp hosts` and otherwise ignored. `<site>/remotes.json` is shared by all
 users of the site; `bsp remote add/remove/use` edits a personal overlay at
 `~/.config/bsp/remotes.json` (or `$BSP_CONFIG`, or `$XDG_CONFIG_HOME/bsp/remotes.json`).
 
@@ -171,8 +210,8 @@ users of the site; `bsp remote add/remove/use` edits a personal overlay at
 
 1. `--url URL`, else `-r NAME[,NAME…]` (case-insensitive, unique prefixes allowed; `-r all`
    for every host), else `$BSP_URL`, else `$BSP_REMOTE`.
-2. Without any of these: a `bsp-hostd` answering on `127.0.0.1:8765` (local mode, when you run
-   bsp on a board host), else the default set with `bsp remote use`, else every remote.
+2. Without any of these: a `bsp-hostd` with the `dut` module answering on `127.0.0.1:8765`
+   (local mode, when you run bsp on a board host), else the default set with `bsp remote use`, else every remote.
 
 Board commands (`bsp dut …`) find the host that owns the board by asking all selected hosts.
 Host commands (`bsp gpio …`, `relay`, `button`, …) run on each selected host in turn; commands
@@ -193,6 +232,8 @@ and a host must be named explicitly.
 |---|---|---|
 | `BSP_SITE` | all | Site directory |
 | `BSP_URL`, `BSP_REMOTE` | client | Host selection (see above) |
+| `BSP_REGISTRY` | client | Registry to list announced hosts from (like `"registry"` in `remotes.json`) |
+| `BSP_REGISTRY_URL`, `BSP_REGISTRY_TOKEN` | host | Registry this host announces itself to, and its token |
 | `BSP_TOKEN` | client, host | API token: sent by the client (like `--token`); required by the host for changes |
 | `BSP_STATELESS` | client | `1`: ignore saved defaults and lease tokens |
 | `BSP_LEASE`, `BSP_SDK_LEASE` | client | Lease token for `dut` / `sdk` commands |

@@ -3,8 +3,9 @@
 Resolution order for which instance a command talks to (per invocation):
     --url URL  >  --remote/-r NAME[,NAME|all]  >  $BSP_URL  >  $BSP_REMOTE  >  default remote
 
-Remotes = the site list (<site>/remotes.json, see core/site.py; the repo ships none)
-overlaid by the user file ($BSP_CONFIG, else $XDG_CONFIG_HOME/bsp/remotes.json,
+Remotes = the site list (<site>/remotes.json, see core/site.py; the repo ships none),
+then the hosts that announced themselves to a registry ("registry": URL in remotes.json, or
+$BSP_REGISTRY; their addresses take precedence), overlaid by the user file ($BSP_CONFIG, else $XDG_CONFIG_HOME/bsp/remotes.json,
 else ~/.config/bsp/remotes.json). The user file and its default (`bsp remote use`)
 are a convenience for interactive shells only. Agents and parallel jobs should
 pass -r/--url or set $BSP_REMOTE per process; --stateless ($BSP_STATELESS=1)
@@ -48,7 +49,7 @@ class Remote:
     url: str
     token: str | None = None
     description: str = ""
-    source: str = "builtin"   # builtin | user | env | flag
+    source: str = "builtin"   # builtin | registry | user | env | flag
     fallback_urls: list[str] = field(default_factory=list)   # tried in order when `url` is unreachable
     ssh: str | None = None    # last resort: tunnel HTTP over ssh to this target (e.g. root@192.0.2.20)
     port: int = 8765
@@ -93,15 +94,43 @@ class RemoteStore:
         site = _read(builtin_path or _site_remotes())
         self._builtin = {**site, "remotes": {**LOCAL["remotes"], **(site.get("remotes") or {})}}
         self._user = {} if stateless else _read(self.user_path)
+        # a host registry (see the registry module): board hosts announce themselves there
+        self.registry_url = (os.environ.get("BSP_REGISTRY") or self._user.get("registry")
+                             or self._builtin.get("registry") or None)
+        self.registry_error: str | None = None
+        self._registered: dict[str, dict[str, Any]] | None = None
+
+    def registered(self) -> dict[str, dict[str, Any]]:
+        """Remote entries of the hosts that announced themselves to the registry (empty without one)."""
+        if self._registered is None:
+            self._registered = {}
+            if self.registry_url:
+                from .transport import HttpTransport, Unreachable
+
+                try:
+                    r = HttpTransport(self.registry_url).request("GET", "/api/v1/registry/list", timeout=8)
+                    if not (r or {}).get("ok"):
+                        raise ValueError((r or {}).get("error", {}).get("message") or "not a bsp registry")
+                    self._registered = {e["host"]: e["remote"] for e in r["result"] if _NAME_RE.match(e["host"])}
+                except (Unreachable, ValueError, KeyError, TypeError) as e:
+                    self.registry_error = f"registry {self.registry_url}: {e}"
+        return self._registered
 
     # -------------------------------------------------------------- view --
     def remotes(self) -> dict[str, Remote]:
         out: dict[str, Remote] = {}
-        for src, data in (("builtin", self._builtin), ("user", self._user)):
+        reg = {"remotes": self.registered()} if self.registry_url else {}
+        for src, data in (("builtin", self._builtin), ("registry", reg), ("user", self._user)):
             for name, r in (data.get("remotes") or {}).items():
                 if r is None:          # user file can hide a builtin with null
                     out.pop(name, None)
                     continue
+                prev = out.get(name)
+                if src == "registry" and prev:          # fresh addresses; keep what the site says otherwise
+                    urls = [r["url"], *(r.get("fallback_urls") or []), *prev.urls]
+                    r = {**r, "url": urls[0], "fallback_urls": list(dict.fromkeys(urls[1:])),
+                         "token": prev.token, "ssh": prev.ssh or r.get("ssh"),
+                         "description": prev.description or r.get("description", "")}
                 out[name] = Remote(name, r["url"].rstrip("/"), r.get("token"), r.get("description", ""), src,
                                    [u.rstrip("/") for u in r.get("fallback_urls") or []],
                                    r.get("ssh"), int(r.get("port", 8765)))

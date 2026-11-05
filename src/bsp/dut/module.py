@@ -12,7 +12,7 @@ from typing import Any
 
 from ..core.cmdspec import CommandSpec, Param
 from ..core.commands import Command
-from ..core.errors import Conflict, InvalidRequest, BspError
+from ..core.errors import Conflict, HardwareError, InvalidRequest, BspError
 from ..core.hooks import HookRunner
 from ..core.module import MODULES, Module, ModuleContext
 from ..sdk.catalog import BOOT_METHODS, SdkCatalog
@@ -166,7 +166,9 @@ class DutModule(Module):
                           else _stage(fb, self.socs.download_mode(b.spec.soc).get("fastboot"))),
                 "needs_human": self.attention.view(dut),
                 "control_state": ctl, "console_tail": tail,
-                "console_attach": f"{self.smtty} {b.console.alias}"}     # interactive: run this on the host
+                "console_attach": f"{self.smtty} {b.console.alias}",     # interactive: run this on the host
+                "console_socket": str(self.consoles.socket(b.console.alias)),   # `bsp dut pipe` connects here
+                "console_up": self.consoles.up(b.console.alias)}
 
     def list(self) -> list[dict[str, Any]]:
         return [self.status(d) for d in self.boards]
@@ -245,6 +247,71 @@ class DutModule(Module):
         out = b.console.run(cmd, expect or self._prompt_for(b), timeout)
         self._event("console", dut=dut, cmd=cmd)
         return {"dut": dut, **out}
+
+    def renew(self, dut: str, lease: str | None, ttl: int) -> dict[str, Any]:
+        self.board(dut)
+        out = self.leases.renew(dut, lease, ttl)
+        return {"dut": dut, "host": self.ctx.host_id,
+                **{k: out[k] for k in ("token", "holder", "purpose", "expires_in_s")}}
+
+    def present(self, dut: str) -> dict[str, Any]:
+        b = self.board(dut)
+        fb = b.fastboot.state()
+        return {"dut": dut, "usb": b.spec.usb, "present": fb is not None, "fastboot": fb}
+
+    def stage(self, dut: str, sha256: str, lease: str | None, cont: bool, timeout: float) -> dict[str, Any]:
+        """Load one uploaded file into RAM through the download port (fastboot stage [+ continue])."""
+        b = self.board(dut)
+        self.leases.check(dut, lease)
+        self._guard_busy(dut)
+        path = self.store.get(sha256)
+        self._busy[dut] = f"stage {path.name}"
+        try:
+            out = b.fastboot.cmd("stage", str(path), timeout=timeout)
+            continued = False
+            if cont:
+                try:
+                    out += "\n" + b.fastboot.cmd("continue", timeout=30)
+                except HardwareError as e:      # the responder may detach on purpose
+                    out += f"\n(continue: {e.message})"
+                continued = True
+        finally:
+            self._busy.pop(dut, None)
+        self._event("staged", dut=dut, sha256=sha256, file=path.name, continued=continued)
+        return {"dut": dut, "sha256": sha256, "file": path.name, "size": path.stat().st_size,
+                "continued": continued, "output": out}
+
+    def boot_files(self, dut: str, files: str, lease: str | None, reset: bool, first_wait: float,
+                   later_wait: float, port_timeout: float) -> dict[str, Any]:
+        b = self.board(dut)
+        self.leases.check(dut, lease)
+        self._guard_busy(dut)
+        shas = [s.strip() for s in (files or "").split(",") if s.strip()]
+        if not shas:
+            raise InvalidRequest("no files to boot", hint="files = comma list of sha256 of uploaded files, in boot order")
+        items = []
+        for sha in shas:
+            p = self.store.get(sha)
+            items.append({"sha256": sha, "path": str(p), "name": p.name, "size": p.stat().st_size})
+        runner = b.runner(self)
+        names = " ".join(i["name"] for i in items)
+        job = self._start_job(dut, f"boot files {names}",
+                              lambda log: runner.run_files(items, log, reset=reset, first_wait=first_wait,
+                                                           later_wait=later_wait, port_timeout=port_timeout),
+                              kind="boot", files=[i["sha256"] for i in items])
+        self._event("boot", dut=dut, files=names, job=job.id)
+        return {"job": job.id, "dut": dut, "files": [{k: i[k] for k in ("name", "sha256", "size")} for i in items],
+                "host": self.ctx.host_id}
+
+    def artifact_has(self, sha256: str) -> dict[str, Any]:
+        p = self.store.find(sha256)
+        return {"sha256": sha256, "present": p is not None, "size": p.stat().st_size if p else None,
+                "file": p.name if p else None}
+
+    def router(self):
+        from .routes import artifact_router
+
+        return artifact_router(self)
 
     def effective_sdks(self, spec: DutSpec) -> list[str]:
         """Declared sdks, else every SDK instance for the board's SoC."""
@@ -441,6 +508,39 @@ class DutModule(Module):
                  Param("expect", help="regex marking completion (default: the SDK shell prompt)", required=False),
                  Param("timeout", "number", "seconds", required=False, default=20), LEASE],
                 render=lambda r: r["output"]),
+            cmd("dut.renew", "Extend your lease on a DUT (holder, purpose and token stay the same)", self.renew,
+                [DUT, LEASE, Param("ttl", "integer", "new lease seconds from now (max 86400)", required=False,
+                                   default=3600)],
+                render=lambda r: f"renewed {r['dut']} for {r['holder']}: {r['expires_in_s']}s left"),
+            cmd("dut.present", "Whether the DUT's download/fastboot port is on the USB bus", self.present,
+                [DUT], mutating=False,
+                render=lambda r: f"{r['dut']}: {'present' if r['present'] else 'not on bus'} ({r['usb']})"
+                                 + (f" {r['fastboot']['product']}" if r.get("fastboot") else "")),
+            cmd("dut.stage", "Load an uploaded file into RAM through the download port (fastboot stage + continue)",
+                lambda dut, sha256, lease, timeout, **kw: self.stage(dut, sha256, lease, kw["continue"], timeout),
+                [DUT, Param("sha256", help="sha256 of a file uploaded with PUT /api/v1/artifacts/<sha256>",
+                            positional=False), LEASE,
+                 Param("continue", "boolean", "run `fastboot continue` after the stage", required=False, default=True),
+                 Param("timeout", "number", "seconds for the stage", required=False, default=300)],
+                render=lambda r: f"{r['dut']}: staged {r['file']} ({r['size']:,} B)"
+                                 + (" and continued" if r["continued"] else "")),
+            cmd("dut.boot_files", "Boot from RAM with uploaded files in order (FSBL, U-Boot/OpenSBI, kernel)",
+                self.boot_files,
+                [DUT, Param("files", help="comma list of sha256 of uploaded files, in boot order", positional=False),
+                 LEASE,
+                 Param("reset", "boolean", "enter download mode first", required=False, default=True),
+                 Param("first_wait", "number", "seconds before polling for the port after the first file",
+                       required=False, default=8),
+                 Param("later_wait", "number", "same, after later files", required=False, default=3),
+                 Param("port_timeout", "number", "how long to poll for the port to come back", required=False,
+                       default=20)],
+                render=lambda r: f"job {r['job']}: {r['dut']} boot {len(r['files'])} file(s)",
+                description="Each file: fastboot stage + continue, then wait for the download port to come back "
+                            "before the next. Background job: follow it with `bsp job get`. Never flashes."),
+            cmd("artifact.has", "Whether a file with this sha256 is in the host's artifact cache",
+                self.artifact_has, [Param("sha256", help="64 hex digits")], mutating=False,
+                render=lambda r: f"{r['sha256'][:16]}...: " + (f"cached ({r['size']:,} B, {r['file']})"
+                                                                if r["present"] else "not cached")),
             cmd("dut.log", "Recent console lines (passive: no keystrokes, no lease)", self.log,
                 [DUT, Param("lines", "integer", "how many", required=False, default=40),
                  Param("grep", help="regex filter", required=False)],

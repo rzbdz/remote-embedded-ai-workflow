@@ -45,6 +45,15 @@ class ConsoleManager:
         i = self.info(alias)
         return bool(i and _alive(i.get("pid")))
 
+    def socket(self, alias: str) -> Path:
+        """The daemon's Unix socket (serial-mux protocol): from its run record, else where serial-mux puts it."""
+        i = self.info(alias) or {}
+        return Path(i.get("socket") or self.run_dir.parent / "sock" / f"{alias}.sock")
+
+    def up(self, alias: str) -> bool:
+        """A daemon serves `alias` and its socket accepts clients."""
+        return self.running(alias) and self.socket(alias).exists()
+
     @staticmethod
     def unit(alias: str) -> str:
         return "bsp-console-" + re.sub(r"[^A-Za-z0-9_.-]", "_", alias)

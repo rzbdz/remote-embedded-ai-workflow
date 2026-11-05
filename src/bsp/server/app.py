@@ -37,7 +37,7 @@ from ..core.jobs import JobManager
 from ..core.module import MODULES, Module, ModuleContext
 from .config import HostConfig
 
-BUILTIN_MODULES = ["bsp.gpio_relay.module", "bsp.sdk.module", "bsp.dut.module"]
+BUILTIN_MODULES = ["bsp.gpio_relay.module", "bsp.sdk.module", "bsp.dut.module", "bsp.registry.module"]
 WEB_DIR = Path(__file__).parent / "web"
 _PYTYPES = {"string": str, "integer": int, "number": float, "boolean": bool}
 
@@ -68,6 +68,13 @@ class Hub:
         for m in self.modules.values():
             self.registry.extend(m.commands())
 
+    announcer: Any = None
+
+    def announcement(self) -> dict[str, Any]:
+        dut = self.modules.get("dut")
+        return {"host": self.config.host_id, "port": self.config.port, "description": self.config.description,
+                "version": __version__, "duts": sorted(getattr(dut, "boards", {}) or {})}
+
     def status(self) -> dict[str, Any]:
         return {
             "host": self.config.host_id,
@@ -77,6 +84,7 @@ class Hub:
             "uptime_s": round(time.time() - self.started, 1),
             "auth": bool(self.config.auth_token),
             "modules": {n: {"title": m.title, **m.status()} for n, m in self.modules.items()},
+            **({"announce": {"url": self.announcer.url, **self.announcer.last}} if self.announcer else {}),
         }
 
     def _core_commands(self) -> list[Command]:
@@ -134,7 +142,16 @@ def create_app(config: HostConfig) -> FastAPI:
         for m in hub.modules.values():
             await run_in_threadpool(m.startup)
         hub.bus.publish("service.started", version=__version__)
+        announcer = None
+        if config.announce:
+            from .announce import Announcer
+
+            announcer = Announcer(config.announce, hub.announcement)
+            hub.announcer = announcer
+            announcer.start()
         yield
+        if announcer:
+            announcer.stop()
         for m in hub.modules.values():
             m.shutdown()
 

@@ -70,6 +70,21 @@ class LeaseManager:
             self._save()
             return dict(lease) | {"expires_in_s": ttl_s}
 
+    def renew(self, rid: str, token: str | None, ttl_s: int) -> dict[str, Any]:
+        """Extend a live lease held with `token`, keeping its holder, purpose and token."""
+        with self._lock:
+            cur = self._live(rid)
+            if not cur:
+                raise Forbidden(f"{self.kind} {rid} is not leased (any more)",
+                                hint=f"leases end when they expire; acquire it again: `bsp dut acquire {rid}`")
+            if token != cur["token"]:
+                raise Forbidden(f"{self.kind} {rid} is leased by {cur['holder']}; token does not match",
+                                hint="only the holder can renew it", details=self.view(rid))
+            ttl_s = max(60, min(int(ttl_s), self.MAX_TTL))
+            cur["expires"] = time.time() + ttl_s
+            self._save()
+            return dict(cur) | {"expires_in_s": ttl_s}
+
     def check(self, rid: str, token: str | None) -> dict[str, Any]:
         """Require a live lease held with `token` for a mutating operation."""
         cur = self._live(rid)

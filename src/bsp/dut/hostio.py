@@ -243,6 +243,93 @@ class ArtifactStore:
                          "mtime": int(mtime), "age_s": int(time.time()) - int(mtime)}
         return out
 
+    # ------------------------------------------------- uploaded files --
+    def find(self, sha256: str) -> Path | None:
+        """The cached file with this content, whichever way it arrived (pulled or uploaded)."""
+        if not SHA256.fullmatch(sha256 or ""):
+            return None
+        d = self.root / sha256
+        if not d.is_dir():
+            return None
+        for p in sorted(d.iterdir()):
+            if p.is_file() and not p.name.endswith(".part"):
+                return p
+        return None
+
+    def get(self, sha256: str) -> Path:
+        p = self.find(sha256)
+        if p is None:
+            raise InvalidRequest(f"no file with sha256 {sha256[:16]}... on this host",
+                                 hint="upload it first: `bsp dut stage DUT FILE` does that for you "
+                                      "(PUT /api/v1/artifacts/<sha256>)")
+        return p
+
+    def upload(self, sha256: str, name: str) -> "Upload":
+        """Start storing an uploaded file under its sha256: `write()` the body, then `commit()`."""
+        if not SHA256.fullmatch(sha256 or ""):
+            raise InvalidRequest(f"not a sha256: {sha256!r}", hint="64 lowercase hex digits")
+        name = re.sub(r"[^A-Za-z0-9._+-]", "_", Path(name or "file").name)[:120] or "file"
+        if name.startswith("."):
+            name = "_" + name
+        return Upload(self, sha256, name)
+
+    def put(self, sha256: str, name: str, chunks) -> dict[str, Any]:
+        up = self.upload(sha256, name)
+        try:
+            for chunk in chunks:
+                up.write(chunk)
+            return up.commit()
+        finally:
+            up.abort()
+
+
+class Upload:
+    """One file being uploaded into an ArtifactStore. Its content is hashed as it arrives; a body
+    that does not match the announced sha256 is discarded. A file already cached is not rewritten."""
+
+    def __init__(self, store: ArtifactStore, sha256: str, name: str):
+        self.sha256, self.name, self.size = sha256, name, 0
+        self.have = store.find(sha256)
+        self._h = hashlib.sha256()
+        self._f = None
+        self.tmp: Path | None = None
+        if self.have is None:
+            d = store.root / sha256
+            d.mkdir(parents=True, exist_ok=True)
+            self.final = d / name
+            self.tmp = d / f"{name}.{os.getpid()}.{time.monotonic_ns()}.part"
+            self._f = open(self.tmp, "wb")
+
+    def write(self, chunk: bytes) -> None:
+        self.size += len(chunk)
+        if self._f is not None:
+            self._h.update(chunk)
+            self._f.write(chunk)
+
+    def commit(self) -> dict[str, Any]:
+        if self.have is not None:
+            return {"sha256": self.sha256, "path": str(self.have), "size": self.have.stat().st_size, "stored": False}
+        self._f.close()
+        got = self._h.hexdigest()
+        if got != self.sha256:
+            raise InvalidRequest(f"upload does not match its sha256 (got {got[:16]}..., {self.size:,} B)",
+                                 hint="the file changed while it was sent, or the transfer was cut; send it again")
+        if not self.size:
+            raise InvalidRequest("refusing an empty file")
+        os.replace(self.tmp, self.final)
+        self.tmp = None
+        return {"sha256": self.sha256, "path": str(self.final), "size": self.size, "stored": True}
+
+    def abort(self) -> None:
+        if self._f is not None and not self._f.closed:
+            self._f.close()
+        if self.tmp is not None:
+            self.tmp.unlink(missing_ok=True)
+            self.tmp = None
+
+
+SHA256 = re.compile(r"[0-9a-f]{64}")
+
 
 def _sha256(p: Path) -> str:
     h = hashlib.sha256()

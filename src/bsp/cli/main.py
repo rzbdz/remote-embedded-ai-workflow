@@ -3,7 +3,8 @@
 Client-side groups:
     bsp hosts | init                    which board hosts are reachable (local or remote mode)
     bsp probe                           discover boards on the host(s) and register them
-    bsp dut list|status|log|acquire|release|reset|boot|console|confirm|bind|logins|add|remove|rename|set|export
+    bsp dut list|status|log|acquire|renew|release|reset|boot|stage|present|console|pipe|confirm|bind|logins|
+            add|remove|rename|set|export
                                         boards, routed to whichever host owns them
     bsp sdk list|show|status|plan|acquire|release|build|job|jobs|exec|get|put
                                         SDK targets on build servers (lease, task branch, build)
@@ -223,6 +224,8 @@ def main(argv: list[str] | None = None) -> int:
             return _fail(g, err, EXIT_FAIL)
         except KeyboardInterrupt:
             return 130
+        if isinstance(result, dutcli.Quiet):
+            return result.rc
         _emit(g, result, text)
         return EXIT_OK
 

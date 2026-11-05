@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `bsp dut renew`: extend a lease from now, keeping its token.
+- `bsp dut pipe`: the board's serial-mux protocol on stdin/stdout, for programs; `dut status`
+  reports `console_socket` and `console_up`.
+- Artifact upload (`PUT /api/v1/artifacts/<sha256>`), streamed over HTTP and the ssh tunnel.
+- `bsp dut stage` and `bsp dut present`: load a local file into RAM through the download port,
+  and check whether the port is on the bus.
+- `bsp dut boot --files`: boot from RAM with local files in order.
+- Host registry: the `registry` module, `server.announce` on board hosts, and `"registry"` in
+  `remotes.json` (or `$BSP_REGISTRY`) so clients find announced hosts.
+
 ## [0.1.0b0] - 2026-11-05
 
 First public beta.
