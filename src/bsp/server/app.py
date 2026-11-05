@@ -63,6 +63,12 @@ class Hub:
         self.modules: dict[str, Module] = {
             name: MODULES.get(name)(ctx, mcfg) for name, mcfg in config.modules.items() if mcfg.get("enabled", True)
         }
+        # A host announcing itself to a registry follows the registry's SDK catalog.
+        self.follower = None
+        if config.announce:
+            from .catalog_follow import CatalogFollower
+
+            self.follower = CatalogFollower(config.announce["url"], config.state_dir / "catalog", self.bus)
         self.registry = CommandRegistry()
         self.registry.extend(self._core_commands())
         for m in self.modules.values():
@@ -74,7 +80,7 @@ class Hub:
         dut = self.modules.get("dut")
         return {"host": self.config.host_id, "port": self.config.port, "description": self.config.description,
                 "version": __version__, "duts": sorted(getattr(dut, "boards", {}) or {}),
-                "ports": dut.ports() if dut else {}}
+                "ports": dut.ports() if dut else {}, "catalog_rev": self.follower.rev if self.follower else 0}
 
     def status(self) -> dict[str, Any]:
         return {
@@ -86,6 +92,7 @@ class Hub:
             "auth": bool(self.config.auth_token),
             "modules": {n: {"title": m.title, **m.status()} for n, m in self.modules.items()},
             **({"announce": {"url": self.announcer.url, **self.announcer.last}} if self.announcer else {}),
+            **({"catalog": {"rev": self.follower.rev, **self.follower.last}} if self.follower else {}),
         }
 
     def _core_commands(self) -> list[Command]:
@@ -105,7 +112,12 @@ class Hub:
                 for e in evs
             ) or "(no events)"
 
-        return [
+        follow = []
+        if self.follower:
+            follow = [Command(CommandSpec("catalog.sync", "Fetch the registry's SDK catalog now (the registry asks after changes)",
+                                          []), lambda: self.follower.sync(),
+                              lambda r: f"catalog revision {r.get('rev')}" + ("" if r.get("ok") else f" (registry unreachable: {r.get('error')})"))]
+        return follow + [
             Command(CommandSpec("status", "Service, module and backend health", [], mutating=False),
                     self.status, render_status),
             Command(CommandSpec("job.get", "Status, progress lines and result of a background job (boot, flash)",
@@ -149,6 +161,9 @@ def create_app(config: HostConfig) -> FastAPI:
 
             announcer = Announcer(config.announce, hub.announcement)
             hub.announcer = announcer
+            if hub.follower:
+                announcer.on_reply = lambda result: hub.follower.check(result.get("catalog_rev"))
+                await run_in_threadpool(hub.follower.sync)
             hub.bus.on("dut.ports", lambda ev: announcer.poke())     # tell the registry about new cables at once
             announcer.start()
         yield
@@ -205,9 +220,12 @@ def create_app(config: HostConfig) -> FastAPI:
         return envelope(request, exc.status_code, {"code": f"http_{exc.status_code}", "message": str(exc.detail)})
 
     if config.auth_token:
+        open_paths = tuple(p for m in hub.modules.values() for p in m.open_paths())
+
         @app.middleware("http")
         async def _auth(request: Request, call_next):
-            if request.url.path.startswith("/api/") and request.method not in ("GET", "HEAD", "OPTIONS"):
+            if request.url.path.startswith("/api/") and request.method not in ("GET", "HEAD", "OPTIONS") \
+                    and not request.url.path.startswith(open_paths or ("\0",)):
                 tok = request.headers.get("x-bsp-token") or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
                 if tok != config.auth_token:
                     e = Forbidden("missing or wrong token", hint="send 'Authorization: Bearer <token>' or 'X-BSP-Token: <token>'; "

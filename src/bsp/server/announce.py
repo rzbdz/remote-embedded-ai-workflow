@@ -45,6 +45,7 @@ class Announcer:
         self.token = cfg.get("token") or os.environ.get("BSP_REGISTRY_TOKEN")
         self.extra = {"ssh_user": cfg.get("ssh_user"), "addresses": list(cfg.get("addresses") or [])}
         self.payload = payload
+        self.on_reply: Callable[[dict[str, Any]], None] = lambda result: None
         self.last: dict[str, Any] = {}
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -69,6 +70,8 @@ class Announcer:
             try:
                 res = self.once()
                 self.last = {"ok": bool(res.get("ok")), "result": res.get("result"), "error": res.get("error")}
+                if res.get("ok"):
+                    self.on_reply(res.get("result") or {})
                 if failing:
                     log.info("announce: registry %s reachable again", self.url)
                 failing = False

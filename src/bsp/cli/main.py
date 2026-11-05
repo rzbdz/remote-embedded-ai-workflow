@@ -8,6 +8,8 @@ Client-side groups:
                                         boards, routed to whichever host owns them
     bsp sdk list|show|status|plan|acquire|release|build|job|jobs|exec|get|put
                                         SDK targets on build servers (lease, task branch, build)
+    bsp catalog list|get|put|recipe|rm|history|rollback|import|export|status
+                                        the SDK catalog in the registry (shared, versioned, validated)
     bsp install                         write ./SKILL.md for AI agents working in this directory
     bsp hints                           hints from the configuration (packs, site)
     bsp remote list|add|remove|use|show manage known hosts (~/.config/bsp/remotes.json)
@@ -35,13 +37,13 @@ from typing import Any
 
 from ..core.cmdspec import CommandSpec, build_parser, parse_tokens
 from ..core.errors import BspError
-from . import dutcli, sdkcli
+from . import catalogcli, dutcli, sdkcli
 from .fleet import Fleet, HostHandle, LeaseBook, connect
 from .remotes import Remote, RemoteError, RemoteStore
 from .transport import Unreachable
 
 EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_UNREACHABLE = 0, 1, 2, 3
-CLIENT_GROUPS = {"hosts", "init", "probe", "dut", "sdk", "install", "hints"}
+CLIENT_GROUPS = {"hosts", "init", "probe", "dut", "sdk", "install", "hints", "catalog"}
 
 
 def eprint(*a: Any) -> None:
@@ -137,6 +139,7 @@ def _client_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", metavar="<command>")
     dutcli.add_parsers(sub)
     sdkcli.add_parser(sub)
+    catalogcli.add_parser(sub)
     ins = sub.add_parser("install", help="write ./SKILL.md for agents: full bsp skill + what this directory is")
     ins.add_argument("--dir", default=".", help="directory to write SKILL.md into (default: current)")
     ins.add_argument("--offline", action="store_true", help="do not query board hosts for the board snapshot")
@@ -208,6 +211,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if args.cmd == "sdk":
                 result, text = sdkcli.run(args, book)
+            elif args.cmd == "catalog":
+                result, text = catalogcli.run(args, store, g.token)
             elif args.cmd == "install":
                 result, text = _install(fleet, args)
             elif args.cmd == "hints":

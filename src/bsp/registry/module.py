@@ -19,6 +19,7 @@ from typing import Any
 from ..core.cmdspec import CommandSpec, Param
 from ..core.commands import Command
 from ..core.errors import InvalidRequest, NotFound
+from ..sdk.catalog import BOOT_METHODS
 from ..core.module import MODULES, Module, ModuleContext
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
@@ -52,6 +53,12 @@ class RegistryModule(Module):
             self._hosts: dict[str, dict[str, Any]] = json.loads(self.path.read_text())
         except (OSError, ValueError):
             self._hosts = {}
+        from ..core.site import layered
+        from .catalog import CatalogStore
+
+        # The SDK catalog, seeded by the site this registry runs with (<site>/hosts/<registry>.yaml -> <site>).
+        site = (ctx.config_dir / config.get("site", "..")).resolve()
+        self.catalog = CatalogStore(ctx.module_state_dir("registry") / "catalog.sqlite", layered("sdk", site))
 
     def _save(self) -> None:
         tmp = self.path.with_suffix(".tmp")
@@ -85,6 +92,7 @@ class RegistryModule(Module):
                      "description": str(body.get("description") or "")[:200],
                      "version": str(body.get("version") or "")[:40],
                      "duts": [str(d) for d in (body.get("duts") or [])][:200],
+                     "catalog_rev": int(body.get("catalog_rev") or 0),
                      "ports": {k: [str(x) for x in v][:500] for k, v in (body.get("ports") or {}).items()
                                if k in ("tty", "usb") and isinstance(v, list)},
                      "first_seen": old.get("first_seen", now), "seen": now}
@@ -101,7 +109,7 @@ class RegistryModule(Module):
             if any(added.values()) or any(removed.values()):
                 self.ctx.bus.publish("registry.ports", host=host, added=added, removed=removed)
         return {"host": host, "registered": True, "seen_address": seen, "addresses": addrs,
-                "refresh_s": max(10, int(self.stale_s / 4))}
+                "refresh_s": max(10, int(self.stale_s / 4)), "catalog_rev": self.catalog.rev}
 
     # -------------------------------------------------------------- reads --
     def view(self, e: dict[str, Any]) -> dict[str, Any]:
@@ -129,8 +137,93 @@ class RegistryModule(Module):
         items = self.list(all=True)
         return {"hosts": len(items), "fresh": sum(not e["stale"] for e in items)}
 
-    def commands(self) -> list[Command]:
+    # ------------------------------------------------------------- catalog --
+    def _changed(self, result: dict[str, Any]) -> dict[str, Any]:
+        """After a write: announce it, and nudge the hosts to fetch the new catalog now (they also notice at
+        their next announcement)."""
+        if result.get("checked") or "rev" not in result:
+            return result
+        self.ctx.bus.publish("catalog.changed", ref=result.get("ref"), rev=self.catalog.rev)
+
+        def nudge() -> None:
+            import urllib.request
+
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            for e in self.list():
+                for url in [e["remote"]["url"], *e["remote"]["fallback_urls"]]:
+                    try:
+                        req = urllib.request.Request(url + "/api/v1/tools/catalog_sync", data=b"{}", method="POST",
+                                                     headers={"Content-Type": "application/json"})
+                        opener.open(req, timeout=5).read()
+                        break
+                    except Exception:  # noqa: BLE001 - the host catches up at its next announcement
+                        continue
+        threading.Thread(target=nudge, name="catalog nudge", daemon=True).start()
+        return result
+
+    def catalog_status(self) -> dict[str, Any]:
+        rev = self.catalog.rev
+        return {"rev": rev, "hosts": [{"host": e["host"], "catalog_rev": e.get("catalog_rev", 0),
+                                       "current": e.get("catalog_rev", 0) == rev, "stale": e["stale"], "age_s": e["age_s"],
+                                       "duts": e["duts"], "ports": e.get("ports") or {}} for e in self.list(all=True)]}
+
+    def open_paths(self) -> list[str]:
+        # Anyone may read and change the catalog: every change is checked, attributed and can be rolled back.
+        return ["/api/v1/catalog/", "/api/v1/tools/catalog_"]
+
+    def _catalog_commands(self) -> list[Command]:
+        c = self.catalog
+        REF = Param("ref", help="sdk id, or <kind>/<id> with kind family | server | workspace | sdk")
+        AUTHOR = Param("author", help="who makes the change", required=False, positional=False, default="")
+        MSG = Param("message", help="why", required=False, positional=False, default="")
+        BASE = Param("base", "integer", "the revision your change is based on (from get)", required=False, positional=False)
+        FORCE = Param("force", "boolean", "write even if it changed since `base`", required=False, default=False)
+        CHECK = Param("check", "boolean", "only validate, write nothing", required=False, default=False)
+        TEXT = Param("text", help="the YAML document", positional=False)
+
+        def show(r: dict[str, Any]) -> str:
+            if r.get("checked"):
+                return f"{r.get('ref', '')}: valid (nothing written)" if "imported" not in r else f"would import {len(r['imported'])}: {', '.join(r['imported'])}"
+            if "imported" in r:
+                return f"imported {len(r['imported'])} document(s) into catalog revision {r['rev']}"
+            return f"{r['ref']}: {'deleted' if r['deleted'] else 'written'} as catalog revision {r['rev']} (was {r['previous']})"
+
         return [
+            Command(CommandSpec("catalog.list", "SDK catalog documents: where each comes from, its revision, who changed it last",
+                                [Param("kind", help="only this kind: family | server | workspace | sdk", required=False)],
+                                mutating=False), c.list,
+                    lambda rows: "\n".join(f"{r['ref']:<28} {r['origin']:<8} rev {r['rev']:<5} {r['author'] or ''}  {r['message'] or ''}" for r in rows)),
+            Command(CommandSpec("catalog.get", "One catalog document as YAML, with its revision (edit it and put it back)",
+                                [REF], mutating=False), c.get, lambda r: r["text"]),
+            Command(CommandSpec("catalog.put", "Write a catalog document (validated with the whole catalog first)",
+                                [REF, TEXT, BASE, FORCE, CHECK, AUTHOR, MSG]),
+                    lambda **kw: self._changed(c.put(**kw)), show),
+            Command(CommandSpec("catalog.recipe", "Replace one boot method of an SDK: load (RAM boot) or download (flash)",
+                                [Param("sdk", help="sdk id"), Param("method", help="load | download", choices=list(BOOT_METHODS)),
+                                 TEXT, BASE, FORCE, CHECK, AUTHOR, MSG]),
+                    lambda **kw: self._changed(c.recipe(**kw)), show),
+            Command(CommandSpec("catalog.delete", "Delete a catalog document (hides the site's copy too)",
+                                [REF, BASE, FORCE, CHECK, AUTHOR, MSG]),
+                    lambda **kw: self._changed(c.delete(**kw)), show),
+            Command(CommandSpec("catalog.history", "Every revision of a catalog document", [REF], mutating=False), c.history,
+                    lambda rows: "\n".join(f"rev {r['rev']:<5} {'DELETED ' if r['deleted'] else ''}{r['author']}  {r['message']}" for r in rows) or "(no revisions in the registry)"),
+            Command(CommandSpec("catalog.rollback", "Write an earlier revision of a document again (as a new revision)",
+                                [REF, Param("rev", "integer", "the revision to go back to"), AUTHOR, MSG]),
+                    lambda **kw: self._changed(c.rollback(**kw)), show),
+            Command(CommandSpec("catalog.import", "Take the site's SDK documents the registry does not have yet into it",
+                                [AUTHOR, CHECK]),
+                    lambda author, check: self._changed(c.import_seed(author or "import", check)), show),
+            Command(CommandSpec("catalog.snapshot", "The registry's catalog documents and deletions (what hosts layer on their site)",
+                                [], mutating=False), c.snapshot, lambda r: f"catalog revision {r['rev']}: {len(r['docs'])} document(s)"),
+            Command(CommandSpec("catalog.status", "The catalog revision, and which revision each host has", [], mutating=False),
+                    self.catalog_status,
+                    lambda r: f"catalog revision {r['rev']}\n" + "\n".join(
+                        f"  {h['host']:<16} rev {h['catalog_rev']:<5} {'ok' if h['current'] else 'BEHIND'}{' (stale)' if h['stale'] else ''}"
+                        for h in r["hosts"])),
+        ]
+
+    def commands(self) -> list[Command]:
+        return self._catalog_commands() + [
             Command(CommandSpec("registry.list", "Board hosts that announced themselves here, with how to reach them",
                                 [Param("all", "boolean", "include hosts not heard from recently", required=False,
                                        default=False)], mutating=False),

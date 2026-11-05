@@ -61,7 +61,11 @@ class DutModule(Module):
         self.serial_log_dir = config.get("serial_log_dir", os.path.expanduser("~/.serial-mux/logs"))
         self.fastboot_bin = config.get("fastboot", "fastboot")
         self.probe_cfg = config.get("probe") or {}
-        self.sdks = SdkCatalog(layered("sdk", site))
+        # The site's catalog, under the registry's copy when this host follows one (see server/catalog_follow.py).
+        self._sdk_roots = layered("sdk", site)
+        self._catalog_layer = ctx.state_dir / "catalog"
+        self.sdks = self._load_catalog()
+        ctx.bus.on("catalog.updated", lambda ev: self.reload_catalog())
         from .socs import SocProfiles
 
         self.socs = SocProfiles(layered("socs", site))
@@ -101,6 +105,23 @@ class DutModule(Module):
         except Exception as e:  # noqa: BLE001 - logins are a convenience; never block the registry
             self.logins.last = {"error": str(e)}
             log.warning("console logins: %s", e)
+
+    def _load_catalog(self) -> SdkCatalog:
+        return SdkCatalog(self._sdk_roots + ([self._catalog_layer] if self._catalog_layer.is_dir() else []))
+
+    def reload_catalog(self) -> None:
+        """Take the registry's new catalog; a catalog that does not load leaves the old one in place."""
+        try:
+            self.sdks = self._load_catalog()
+            self._event("catalog", sdks=len(self.sdks.instances.names()))
+        except BspError as e:
+            self._event("error", error=e.to_dict(), what="catalog reload")
+            log.warning("catalog reload failed, keeping the previous one: %s", e.message)
+
+    def catalog_rev(self) -> int:
+        from ..registry.catalog import layer_rev
+
+        return layer_rev(self._catalog_layer)
 
     def login_list(self) -> dict[str, Any]:
         rows = [{"login": u, "dut": d} for u, d in sorted(self.logins._ours().items())]
@@ -236,7 +257,13 @@ class DutModule(Module):
                                       f"change with `bsp dut set {dut} --sdks ...` (empty = all SDKs of its SoC)")
         inst.boot_plan(method, variant)       # validate first: todo methods fail here with their notes
         runner = b.runner(self)
-        job = self._start_job(dut, f"boot {sdk} [{method}]", lambda log: runner.run(inst, method, variant, log),
+        rev = self.catalog_rev()
+
+        def body(log):
+            log(f"recipe from catalog revision {rev}" if rev else "recipe from the site's catalog")
+            return runner.run(inst, method, variant, log)
+
+        job = self._start_job(dut, f"boot {sdk} [{method}]", body,
                               kind="boot", sdk=sdk, method=method)
         self._event("boot", dut=dut, sdk=sdk, method=method, job=job.id)
         return {"job": job.id, "dut": dut, "sdk": sdk, "method": method, "host": self.ctx.host_id}

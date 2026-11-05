@@ -36,32 +36,45 @@ class SdkModule(Module):
         super().__init__(ctx, config)
         from ..core.site import layered
 
-        self.catalog = SdkCatalog(layered("sdk", (ctx.config_dir / config.get("site", "..")).resolve()))
+        self._roots = layered("sdk", (ctx.config_dir / config.get("site", "..")).resolve())
+        self._layer = ctx.state_dir / "catalog"            # the registry's catalog, when this host follows one
+        self.catalog = self._load()
+        ctx.bus.on("catalog.updated", lambda ev: self._reload())
+
+    def _load(self) -> SdkCatalog:
+        return SdkCatalog(self._roots + ([self._layer] if self._layer.is_dir() else []))
+
+    def _reload(self) -> None:
+        try:
+            self.catalog = self._load()
+        except Exception:  # noqa: BLE001 - keep the catalog that loads
+            pass
 
     def commands(self) -> list[Command]:
-        c = self.catalog
-        sdk = Param("sdk", help=f"sdk instance id ({', '.join(c.instances.names())})")
+        def c_():
+            return self.catalog
+        sdk = Param("sdk", help=f"sdk instance id ({', '.join(c_().instances.names())})")
         return [
             Command(CommandSpec("sdk.list", "List SDK instances, their build server and boot-method status",
-                                mutating=False), lambda: [i.summary() for _, i in sorted(c.instances.items())],
+                                mutating=False), lambda: [i.summary() for _, i in sorted(c_().instances.items())],
                     _render_list),
             Command(CommandSpec("sdk.show", "One SDK: components, artifact paths by role, boot methods",
                                 [sdk], mutating=False),
-                    lambda sdk: {**c.get(sdk).summary(), "artifacts": c.get(sdk).artifacts(),
-                                 "boot_notes": {m: b.notes for m, b in c.get(sdk).boot.items()}}),
+                    lambda sdk: {**c_().get(sdk).summary(), "artifacts": c_().get(sdk).artifacts(),
+                                 "boot_notes": {m: b.notes for m, b in c_().get(sdk).boot.items()}}),
             Command(CommandSpec("sdk.build-plan", "Dry run: the exact command a build would run on the build server",
                                 [sdk, Param("component", help="e.g. kernel, uboot, linux"),
                                  Param("clean", "boolean", "clean instead of build", required=False, default=False)],
                                 mutating=False),
-                    lambda sdk, component, clean: {"sdk": sdk, "server": c.get(sdk).server.ssh,
-                                                   "command": c.get(sdk).build_command(component, clean)},
+                    lambda sdk, component, clean: {"sdk": sdk, "server": c_().get(sdk).server.ssh,
+                                                   "command": c_().get(sdk).build_command(component, clean)},
                     lambda r: f"ssh {r['server']}\n  {r['command']}"),
             Command(CommandSpec("sdk.boot-plan", "Dry run: boot steps for load (RAM) or download (flash) boot",
                                 [sdk, Param("method", help="load = fastboot RAM boot; download = flash then boot",
                                             choices=list(BOOT_METHODS)),
                                  Param("variant", help="e.g. uboot-only", required=False)],
                                 mutating=False),
-                    lambda sdk, method, variant: c.get(sdk).boot_plan(method, variant), _render_plan),
+                    lambda sdk, method, variant: c_().get(sdk).boot_plan(method, variant), _render_plan),
         ]
 
     def status(self) -> dict[str, Any]:

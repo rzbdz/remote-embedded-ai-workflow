@@ -150,3 +150,44 @@ Common to every step:
 
 Before running, the host fetches every artifact the recipe refers to from the build server over
 ssh and caches it by checksum, so unchanged files are not copied again.
+
+## The catalog in the registry
+
+With a host registry (see [configuration.md](configuration.md#host-registry)), the registry keeps
+the SDK catalog — SDK instances with their `load` and `download` recipes, families, build servers
+and workspaces — and hands it to every host and client. The site's `sdk/` directory stays as the
+seed underneath: a document the registry does not have comes from the site, and deleting one in
+the registry hides the site's copy as well. `bsp catalog import` takes the site's documents into
+the registry once; `bsp catalog export --dir DIR` writes the registry's documents back as files
+(a backup you can keep in git).
+
+| Command | Purpose |
+|---|---|
+| `bsp catalog list [--kind sdk\|family\|server\|workspace]` | Documents, where each comes from, its revision and last change |
+| `bsp catalog get REF [-o FILE]` | A document as YAML; `-o` writes it with a first line naming its revision |
+| `bsp catalog put REF -f FILE [--base REV] [--force] [--check] [-m MSG]` | Write a document |
+| `bsp catalog recipe SDK load\|download -f FILE [...]` | Replace one recipe: a list of steps, or `{status, steps, notes, variants}` |
+| `bsp catalog rm REF --base REV [-m MSG]` | Delete a document |
+| `bsp catalog history REF`, `bsp catalog rollback REF REV` | Every revision, and writing an earlier one again |
+| `bsp catalog status` | The catalog revision, and which revision each host has |
+
+`REF` is an SDK id, or `family/ID`, `server/ID`, `workspace/ID`.
+
+Anyone may change the catalog; what keeps it safe:
+
+- **No lost updates.** A change names the revision it was based on (`put` reads it from the first
+  line `get -o` wrote). If someone changed the document meanwhile, the write is refused with who
+  did it; get it again and redo the change, or pass `--force`.
+- **Validated first.** The whole catalog is loaded with the change applied and every `ready`
+  recipe is planned; a change that breaks any SDK (an unknown server, artifact role or step) is
+  refused with the reason, and nothing is stored. `--check` only validates.
+- **Everything is kept.** Each write is a new revision with its author (`--author`, default
+  `$BSP_HOLDER` or `$USER`) and message; `rollback` restores any earlier one.
+
+Hosts learn the catalog revision from the registry's answer to their announcements, and the
+registry nudges them right after a change. A host fetches the new catalog into `<state>/catalog`,
+reloads it without restarting, and keeps it across restarts and outages. Boots already running
+keep the recipe they started with; each boot job's log names the catalog revision its recipe came
+from. Clients (`bsp sdk`, `bsp catalog`) read the registry's catalog too, keeping the last copy in
+`~/.cache/bsp/` for when the registry cannot be reached. The registry stores the catalog in
+`<state>/registry/catalog.sqlite`.

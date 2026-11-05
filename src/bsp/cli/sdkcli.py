@@ -32,6 +32,11 @@ def catalog() -> SdkCatalog:
     from ..core.site import layered
 
     roots = layered("sdk")
+    from .catalogcli import registry_layer
+
+    layer = registry_layer()                 # the registry's catalog above the site, when there is a registry
+    if layer:
+        roots.append(layer)
     if os.environ.get("BSP_SDK_CATALOG"):
         roots.append(Path(os.environ["BSP_SDK_CATALOG"]))
     return SdkCatalog(roots)

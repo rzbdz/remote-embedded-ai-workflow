@@ -65,5 +65,9 @@ class Module(ABC):
     def status(self) -> dict[str, Any]:
         return {}
 
+    def open_paths(self) -> list[str]:
+        """API path prefixes whose writes need no token on a host that has one."""
+        return []
+
 
 MODULES: Registry[type[Module]] = Registry("module")

@@ -13,6 +13,9 @@ All notable changes to this project are documented here. The format follows
   boot ROM's console banner or its USB download device now counts as being in download mode.
 
 ### Added
+- The SDK catalog in the registry (`bsp catalog …`): versioned documents with history and rollback,
+  conflict checks, validation of every change against the whole catalog, distribution to hosts
+  without restarts; the site's `sdk/` is the seed.
 - Hosts watch for serial and USB devices coming and going (`dut.ports`) and tell the registry at
   once (`registry.ports`); `bsp watch --registry [--json]` streams the registry's events.
 - `bsp probe --human`: find boards without reset wiring by asking a person to put each one into
