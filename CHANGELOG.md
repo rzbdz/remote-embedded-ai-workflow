@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Fixed
+- The SpacemiT flash hook skips a medium U-Boot reports as `NULL` (no SPI NOR on a UFS board)
+  instead of flashing a NOR layout there and failing after the block layout was written.
 - Boot and flash recipes no longer fail on a board that is already in download mode: either the
   boot ROM's console banner or its USB download device now counts as being in download mode.
 

@@ -51,12 +51,18 @@ def main():
 
     sizes = {"mtd": getvar(binary, usb, "mtd-size"), "gpt": getvar(binary, usb, "blk-size")}
     print(f"device reports mtd-size={sizes['mtd']} blk-size={sizes['gpt']}")
+    # U-Boot answers NULL for a medium the board does not have (e.g. no SPI NOR on a UFS board): skip that
+    # medium. No answer at all (an older U-Boot) still falls back to the package's layouts.
+    absent = {fmt for fmt, v in sizes.items() if v is not None and v.upper() in ("NULL", "NONE")}
     def mib(v):
         m = re.fullmatch(r"(\d+)([KMG])", v or "")
         return int(m.group(1)) * {"K": 1 / 1024, "M": 1, "G": 1024}[m.group(2)] if m else None
 
     layouts = []
     for fmt in media:
+        if fmt in absent:
+            print(f"device has no {fmt} medium ({'mtd' if fmt == 'mtd' else 'blk'}-size={sizes[fmt]}); skipping {fmt}")
+            continue
         cand = []
         if sizes.get(fmt):
             cand.append(f"partition_{sizes[fmt]}.json")

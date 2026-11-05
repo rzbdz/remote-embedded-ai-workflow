@@ -1,4 +1,5 @@
 import json
+import sys
 import os
 import stat
 from pathlib import Path
@@ -341,3 +342,36 @@ def test_enter_fdl_accepts_a_board_already_in_download_mode(tmp_path):
         BootRunner("b1", Nothing(), fb, con, FakeStore(), download_mode={"console": "download handler"}) \
             .enter_fdl(lines.append, timeout=0.5)
     assert "neither the boot ROM's banner" in e.value.message and "usb:2-1.2" in e.value.message
+
+
+def test_flash_hook_skips_a_medium_the_board_does_not_have(tmp_path):
+    """U-Boot reports mtd-size NULL on a UFS-only board: the NOR layout is skipped, not flashed and failed."""
+    import subprocess
+    import zipfile
+
+    pkg = tmp_path / "flash.zip"
+    with zipfile.ZipFile(pkg, "w") as z:
+        z.writestr("partition_64M.json", json.dumps({"format": "mtd", "partitions": [{"name": "fsbl", "image": "nor.bin"}]}))
+        z.writestr("partition_universal.json", json.dumps({"format": "gpt", "partitions": [{"name": "bootfs", "image": "bootfs.vfat"}]}))
+        z.writestr("nor.bin", "n")
+        z.writestr("bootfs.vfat", "b")
+    log = tmp_path / "fastboot.log"
+    fb = tmp_path / "fastboot"
+    fb.write_text(f"""#!/bin/sh
+echo "$*" >> {log}
+case "$3 $4" in
+  "getvar mtd-size") echo "mtd-size: NULL" >&2 ;;
+  "getvar blk-size") echo "blk-size: universal" >&2 ;;
+  "flash mtd") echo "FAILED (remote: 'invalid partition or device')" >&2; exit 1 ;;
+  *) echo OKAY >&2 ;;
+esac
+""")
+    fb.chmod(0o755)
+    hook = ROOT / "packs" / "spacemit" / "hooks" / "flash" / "spacemit-pkg"
+    req = {"usb": "usb:2-1.1", "fastboot": str(fb), "artifacts": {"flash-zip": str(pkg)}}
+    r = subprocess.run([sys.executable, str(hook)], input=json.dumps(req), capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stdout
+    result = json.loads(r.stdout.strip().splitlines()[-1])
+    assert result["layouts"] == ["partition_universal.json"] and not result["failed"]
+    assert "device has no mtd medium (mtd-size=NULL); skipping mtd" in r.stdout
+    assert "flash mtd" not in log.read_text() and "flash gpt" in log.read_text()
