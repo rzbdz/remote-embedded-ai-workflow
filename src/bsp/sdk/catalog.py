@@ -29,6 +29,8 @@ from ..core.errors import InvalidRequest, NotFound
 from ..core.registry import Registry
 
 BOOT_METHODS = ("load", "download")
+# The kinds of catalog documents, as directory names (servers before workspaces before instances).
+CATALOG_KINDS = ("families", "servers", "workspaces", "instances")
 BOOT_STATUS = ("ready", "todo")
 # enter-fdl  reset through the DUT control backend into BROM download mode
 # wait       wait for a serial regex and/or a fastboot product regex (since the last action);
@@ -235,22 +237,36 @@ class SdkCatalog:
         self.instances: Registry[Instance] = Registry("sdk instance")
         self.workspaces: Registry[Workspace] = Registry("sdk workspace")
 
-        def files(kind: str) -> list[Path]:
-            return [p for r in self.roots for p in sorted((r / kind).glob("*.yaml"))]
+        # Later roots override earlier ones by id; a root's `removed.json` ({"instances": [ids], ...}) takes ids
+        # out of the roots before it (a document deleted in the registry hides the site's copy).
+        layered: dict[str, dict[str, tuple[Path, dict[str, Any]]]] = {k: {} for k in CATALOG_KINDS}
+        for r in self.roots:
+            removed = r / "removed.json"
+            if removed.exists():
+                import json
 
-        for p in files("families"):
-            d = _load_yaml(p)
+                for kind, ids in (json.loads(removed.read_text()) or {}).items():
+                    for i in ids:
+                        layered.get(kind, {}).pop(i, None)
+            for kind in CATALOG_KINDS:
+                for p in sorted((r / kind).glob("*.yaml")):
+                    d = _load_yaml(p)
+                    layered[kind][d["id"]] = (p, d)
+
+        def docs(kind: str) -> list[tuple[Path, dict[str, Any]]]:
+            return list(layered[kind].values())
+
+        for p, d in docs("families"):
             b, a = d.get("build") or {}, d.get("artifacts") or {}
             self.families.register(d["id"], Family(d["id"], b.get("runner", ""), b.get("targets") or {},
                                                    b.get("clean") or {}, a.get("dir", "output"), a.get("roles") or {}, d))
-        for p in files("servers"):
-            d = _load_yaml(p)
+        for p, d in docs("servers"):
+            if "host" not in d or "user" not in d:
+                raise InvalidRequest(f"{p}: a build server needs `host` and `user`")
             self.servers.register(d["id"], Server(d["id"], d["host"], d["user"], d))
-        for p in files("workspaces"):
-            d = _load_yaml(p)
+        for p, d in docs("workspaces"):
             self.workspaces.register(d["id"], Workspace(d["id"], self.servers.get(d["server"]), d["path"], d))
-        for p in files("instances"):
-            d = _load_yaml(p)
+        for p, d in docs("instances"):
             self.instances.register(d["id"], self._instance(d, p))
 
     def _instance(self, d: dict[str, Any], p: Path) -> Instance:
