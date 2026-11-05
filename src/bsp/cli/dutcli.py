@@ -359,7 +359,11 @@ def dut_add(fleet: Fleet, args) -> tuple[Any, str]:
 # --------------------------------------------------------------- probe --
 def probe(fleet: Fleet, args) -> tuple[Any, str]:
     params = {"pins": args.pins, "consoles": args.consoles, "identify": not args.no_identify,
-              "sdks": args.sdks, "dry_run": args.dry_run}
+              "sdks": args.sdks, "dry_run": args.dry_run, "human": args.human, "rounds": args.rounds,
+              "wait_s": args.wait}
+    if args.human and len(fleet.require()) > 1:
+        raise InvalidRequest("a human probe asks a person to reset boards on one host at a time",
+                             hint=f"pick the host with -r ({', '.join(h.id for h in fleet.hosts())})")
     out = sys.stderr if args.json else sys.stdout
     jobs = []
     for h, r in fleet.fan("dut_probe", params):
@@ -376,7 +380,8 @@ def probe(fleet: Fleet, args) -> tuple[Any, str]:
     results: dict[str, Any] = {}
     for h, job in jobs:
         try:
-            v, _ = follow_job(h, job, _Prefixed(out, f"[{h.id}]"), 900)
+            v, _ = follow_job(h, job, _Prefixed(out, f"[{h.id}]"),
+                              max(900.0, args.rounds * args.wait + 300) if args.human else 900)
             results[h.id] = v["result"]
         except BspError as e:
             print(f"[{h.id}] probe failed: {e.message}", file=out)
@@ -387,8 +392,9 @@ def probe(fleet: Fleet, args) -> tuple[Any, str]:
         for p in res.get("proposals", []):
             spec = p["spec"]
             spec["id"] = _unique(spec["id"], taken)
+            reset = (spec["control"].get("reset") or {}).get("pin") or "by a person"
             print(f"\n[{host}] found {spec['board']} ({spec['description']})\n"
-                  f"    reset {spec['control']['reset']['pin']}  console {spec['console']['alias']}  "
+                  f"    reset {reset}  console {spec['console']['alias']}  "
                   f"usb {spec['fastboot']['usb']}  fdl {spec['control']['fdl']['strategy']}", file=out)
             for w in p.get("warnings", []):
                 print(f"    warning: {w}", file=out)
@@ -472,6 +478,11 @@ def add_parsers(sub) -> None:
     p.add_argument("--dry-run", action="store_true", help="only list candidates")
     p.add_argument("--yes", action="store_true", help="register proposals without asking (agents)")
     p.add_argument("--replace", action="store_true", help="overwrite DUTs with the same id")
+    p.add_argument("--human", action="store_true",
+                   help="boards without reset wiring: a person resets each unregistered board into download mode "
+                        "and bsp pairs the console that speaks with the USB port that appears")
+    p.add_argument("--rounds", type=int, default=8, help="--human: at most this many boards (default 8)")
+    p.add_argument("--wait", type=float, default=120, help="--human: seconds to wait for each board (default 120)")
 
     d = sub.add_parser("dut", help="boards: list/status, lease, reset, boot an SDK, serial console")
     ds = d.add_subparsers(dest="dut_cmd", metavar="<action>")

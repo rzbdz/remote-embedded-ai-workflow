@@ -104,6 +104,7 @@ whether the daemon is up as `console_up`.
 | `bsp -r REGISTRY registry list [--all]` | Hosts that announced themselves to a registry (see [configuration.md](configuration.md#host-registry)) |
 | `bsp init` | First-run check: configuration directory, mode, hosts |
 | `bsp probe [--pins P..] [--consoles C..] [--sdks LIST] [--dry-run] [--yes] [--no-identify] [--replace]` | Discover boards (pulses GPIO lines — see [getting-started.md](getting-started.md#option-a-probe-boards-wired-to-gpio-reset-lines)) |
+| `bsp -r HOST probe --human [--rounds N] [--wait S] [--consoles C..] [--yes]` | Discover boards without reset wiring: a person puts one unregistered board at a time into download mode, and bsp pairs the console that speaks with the USB port that appears; each becomes a slot reset by a person, as with `dut bind` |
 | `bsp remote list\|show\|add\|remove\|use` | Manage personal host entries |
 | `bsp watch` | Stream live events from the host(s) |
 | `bsp tools` | Print the host's AI tool schemas in Anthropic format (OpenAI format: `GET /api/v1/tools?format=openai`) |

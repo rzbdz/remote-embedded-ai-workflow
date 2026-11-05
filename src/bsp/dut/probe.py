@@ -14,6 +14,13 @@ Pipeline (each stage is a replaceable piece):
   propose      one DUT spec per board; the CLI lets a human edit names, then
                registers them with `dut.add` (agents pass --yes)
 
+With `human`, boards without reset wiring are found instead: no pin is pulsed.
+Each round asks a person to put one unregistered board into download mode
+(press RESET; hold BOOT too where download mode is not strapped). The console
+that speaks and the USB port that enumerates in that round belong together and
+become a slot with the `human` control backend, like `bsp dut bind`. A round in
+which nothing happens ends the probe.
+
 Nothing is registered by the probe job itself.
 """
 
@@ -72,13 +79,14 @@ class _RawTtyWatcher:
 
 class Prober:
     def __init__(self, mod, pins: str | None, consoles: str | None, identify: bool,
-                 default_sdks: list[str] | None):
+                 default_sdks: list[str] | None, human: bool = False, rounds: int = 8, wait_s: float = 120):
         self.mod = mod
         self.cfg = mod.probe_cfg
         self.want_pins = [p.strip() for p in (pins or "").split(",") if p.strip()]
         self.want_consoles = [c.strip() for c in (consoles or "").split(",") if c.strip()]
         self.identify = identify
         self.default_sdks = default_sdks
+        self.human, self.rounds, self.wait_s = human, max(1, int(rounds)), float(wait_s)
         self.watch_s = float(self.cfg.get("watch_s", 3.0))
         self.pulse_ms = int(self.cfg.get("pulse_ms", 1000))
         self.socs = mod.socs
@@ -91,13 +99,16 @@ class Prober:
 
     def _used(self) -> dict[str, set]:
         used: dict[str, set] = {"pins": set(), "consoles": set(), "usb": set()}
-        gpio = self._gpio()
+        try:
+            gpio = self._gpio()
+        except BspError:          # a host without GPIO wiring: only human probes make sense there
+            gpio = None
         for b in self.mod.boards.values():
             used["usb"].add(b.spec.usb)
             used["consoles"].add(b.spec.console_alias)
             for role in ("reset", "fdl"):
                 pin = (b.spec.control.get(role) or {}).get("pin")
-                if pin:
+                if pin and gpio:
                     used["pins"].add(gpio.resolve(pin).key)
         return used
 
@@ -130,8 +141,8 @@ class Prober:
 
     def plan(self) -> dict[str, Any]:
         lines: list[str] = []
-        return {"host": self.mod.ctx.host_id,
-                "pins": [p["target"] for p in self.candidate_pins()],
+        return {"host": self.mod.ctx.host_id, "human": self.human,
+                "pins": [] if self.human else [p["target"] for p in self.candidate_pins()],
                 "consoles": self.candidate_consoles(lines.append),
                 "usb": list(self.usb_snapshot().values()),
                 "existing_duts": sorted(self.mod.boards),
@@ -139,6 +150,8 @@ class Prober:
 
     # ------------------------------------------------------------- run --
     def run(self, log: Log) -> dict[str, Any]:
+        if self.human:
+            return self.run_human(log)
         pins = self.candidate_pins()
         consoles = self.candidate_consoles(log)
         if not consoles:
@@ -200,6 +213,79 @@ class Prober:
         return {"pin": pin, "console": pending[cid], "usb": changed[0] if len(changed) == 1 else None,
                 "usb_candidates": changed, "fdl": fdl, "console_text": text[-400:], "soc": soc}
 
+    # ------------------------------------------------------ human probe --
+    def run_human(self, log: Log) -> dict[str, Any]:
+        consoles = self.candidate_consoles(log)
+        if not consoles:
+            raise InvalidRequest("no free serial console on this host",
+                                 hint="plug the board's USB-UART in (or start serial-mux for it) and rerun")
+        registered = self._used()["usb"]
+        log(f"human probe: {len(consoles)} free console(s) [{', '.join(c['id'] for c in consoles)}], "
+            f"up to {self.rounds} board(s), {self.wait_s:g}s per board")
+        found: list[dict[str, Any]] = []
+        pending = {c["id"]: c for c in consoles}
+        raw = {c["id"]: _RawTtyWatcher(c["device"]) for c in consoles if c["kind"] == "tty"}
+        try:
+            for n in range(1, self.rounds + 1):
+                if not pending:
+                    break
+                hit, anything = self._human_round(n, pending, raw, registered, log)
+                if hit:
+                    found.append(hit)
+                    pending.pop(hit["console"]["id"], None)
+                    if hit["usb"]:
+                        registered.add(hit["usb"])
+                elif not anything:
+                    log(f"round {n}: nothing happened within {self.wait_s:g}s; done")
+                    break
+        finally:
+            for w in raw.values():
+                w.close()
+        log(f"paired {len(found)} board(s); consoles left: {sorted(pending) or 'none'}")
+        proposals = [self._propose(h, i, log) for i, h in enumerate(found)]
+        self._uniquify(proposals)
+        return {"host": self.mod.ctx.host_id, "proposals": proposals, "unmatched_consoles": list(pending.values()),
+                "next": "review names, then `bsp dut add` each proposal (the CLI does this interactively)"}
+
+    def _human_round(self, n: int, pending: dict, raw: dict, registered: set, log: Log):
+        marks = {cid: self._mark(c) for cid, c in pending.items()}
+        for w in raw.values():
+            w.take()
+        texts = {cid: "" for cid in pending}
+        before = self.usb_snapshot()
+        log(f"ACTION NEEDED (board {n}): put ONE unregistered board on {self.mod.ctx.host_id} into download mode: "
+            f"press its RESET (hold its BOOT/download button too unless download mode is strapped), then wait")
+        self.mod._event("attention", dut=f"probe@{self.mod.ctx.host_id}", action="enter download mode",
+                        message=f"probe: put one unregistered board into download mode (board {n})")
+        deadline, settle_until = time.monotonic() + self.wait_s, None
+        while True:
+            time.sleep(0.5)
+            for cid, c in pending.items():
+                texts[cid] += raw[cid].take().decode("utf-8", "replace") if cid in raw else ""
+            spoke = {cid: (texts[cid] if cid in raw else self._read(c, marks[cid])) for cid, c in pending.items()}
+            spoke = {cid: t for cid, t in spoke.items() if t.strip()}
+            after = self.usb_snapshot()
+            changed = [u for u, d in after.items() if u not in registered
+                       and (u not in before or before[u].get("devnum") != d.get("devnum"))]
+            now = time.monotonic()
+            if spoke and changed and settle_until is None:
+                settle_until = now + 3.0          # let the rest of the banner and enumeration arrive
+            if (settle_until and now >= settle_until) or now > deadline:
+                break
+        if not spoke and not changed:
+            return None, False
+        if len(spoke) != 1:
+            log(f"round {n}: {'no console reacted' if not spoke else 'several consoles reacted: ' + ', '.join(spoke)}"
+                f"; usb {changed or 'none'} — try again with one board at a time")
+            return None, True
+        cid, text = next(iter(spoke.items()))
+        fdl = self.socs.in_download_mode(text, " ".join(after[u].get("product", "") for u in changed))
+        soc, _ = self.socs.detect(text)
+        log(f"round {n}: console {cid} reacted; usb {changed or 'none'}; {'download mode' if fdl else 'no download-mode signature'}"
+            + (f"; SoC {soc}" if soc else ""))
+        return ({"pin": None, "console": pending[cid], "usb": changed[0] if len(changed) == 1 else None,
+                 "usb_candidates": changed, "fdl": fdl, "console_text": text[-400:], "soc": soc}, True)
+
     def _mark(self, c: dict[str, Any]):
         if c["kind"] != "serial-mux":
             return None
@@ -242,19 +328,23 @@ class Prober:
             "console": {"alias": alias or name, **({"device": con["device"], "start": True} if not alias else {}),
                         "usb_port": con.get("usb_port")},
             "fastboot": {"usb": hit["usb"] or "usb:UNKNOWN"},
-            "control": {"backend": "gpio-relay",
-                        "reset": {"pin": hit["pin"]["target"], "mode": "button", "pulse_ms": self.pulse_ms},
-                        "fdl": {"strategy": "strapped" if hit["fdl"] else "button"}},
+            "control": ({"backend": "gpio-relay",
+                         "reset": {"pin": hit["pin"]["target"], "mode": "button", "pulse_ms": self.pulse_ms},
+                         "fdl": {"strategy": "strapped" if hit["fdl"] else "button"}} if hit["pin"] else
+                        {"backend": "human", "fdl": {"strategy": "strapped"}}),
             "sdks": sdks,
             "identity": ident,
-            "probed": {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "gpio": hit["pin"]["label"],
+            "probed": {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "gpio": hit["pin"]["label"] if hit["pin"] else None,
+                       "human": not hit["pin"],
                        "usb_candidates": hit["usb_candidates"]},
         }
         warnings = []
         if not hit["usb"]:
             warnings.append("no unique USB port re-enumerated: set fastboot.usb by hand (`fastboot devices -l`)")
-        if not hit["fdl"]:
+        if not hit["fdl"] and hit["pin"]:
             warnings.append("reset did not land in FDL: this board needs an FDL line (control.fdl.pin)")
+        if not hit["fdl"] and not hit["pin"]:
+            warnings.append("no download-mode signature seen: check with `bsp dut status` after the first reset")
         return {"spec": spec, "warnings": warnings, "evidence": hit["console_text"]}
 
     @staticmethod

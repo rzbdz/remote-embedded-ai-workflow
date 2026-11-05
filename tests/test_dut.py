@@ -264,3 +264,56 @@ def test_human_backend_detects_the_board_itself_and_times_out():
     assert "bsp dut confirm slot-1" in e.value.hint
     with pytest.raises(NotFound):
         att.confirm("slot-1")                        # nothing pending any more
+
+
+def test_human_probe_pairs_the_console_that_speaks_with_the_usb_port_that_appears(tmp_path, monkeypatch):
+    """No GPIO: a person resets boards one at a time; each round pairs a console and a USB port."""
+    import types
+
+    from bsp.core.hooks import HookRunner as _H  # noqa: F401 - the real hooks are replaced below
+    from bsp.dut import probe as probe_mod
+    from bsp.dut.socs import SocProfiles
+
+    logs = {a: tmp_path / a for a in ("con-a", "con-b")}
+    for d in logs.values():
+        d.mkdir()
+    usb = {"usb:1-1": {"usb": "usb:1-1", "devnum": 3, "product": "hub"}}
+    script = [("con-b", "usb:2-1.4"), ("con-a", "usb:2-1.2")]
+
+    class Hooks:
+        def run(self, kind, name, req, timeout=0, log=None):
+            if name == "consoles":
+                return types.SimpleNamespace(data={"consoles": [
+                    {"id": a, "kind": "serial-mux", "alias": a, "log": str(d)} for a, d in logs.items()]})
+            return types.SimpleNamespace(data={"devices": list(usb.values())})
+
+    events = []
+    mod = types.SimpleNamespace(
+        probe_cfg={}, socs=SocProfiles([ROOT / "examples" / "site" / "socs"]), hooks=Hooks(), boards={},
+        serial_log_dir=str(tmp_path / "logs"), fastboot_bin="fastboot",
+        ctx=types.SimpleNamespace(host_id="lab-9", service=lambda name: (_ for _ in ()).throw(NotFound("no gpio"))),
+        _event=lambda topic, **d: events.append(d))
+    lines = []
+    sleeps = {"n": 0}
+
+    def fake_sleep(s):
+        # a person reacts during the first poll of each round
+        sleeps["n"] += 1
+        if script and sleeps["n"] % 10 == 1:
+            con, port = script.pop(0)
+            from datetime import date
+
+            (logs[con] / f"{date.today().isoformat()}.log").open("a").write("ROMB: hello\nROMB: usb2 init\nxx download handler\n")
+            usb[port] = {"usb": port, "devnum": 9, "product": "DFU download"}
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(probe_mod.time, "sleep", lambda s: (fake_sleep(s), clock.__setitem__("t", clock["t"] + s)))
+    monkeypatch.setattr(probe_mod.time, "monotonic", lambda: clock["t"])
+    p = probe_mod.Prober(mod, None, None, identify=False, default_sdks=None, human=True, rounds=5, wait_s=10)
+    res = p.run(lines.append)
+    specs = [x["spec"] for x in res["proposals"]]
+    assert [(s["console"]["alias"], s["fastboot"]["usb"], s["control"]["backend"]) for s in specs] == [
+        ("con-b", "usb:2-1.4", "human"), ("con-a", "usb:2-1.2", "human")]
+    assert all(s["soc"] == "soc-b" and s["probed"]["human"] for s in specs)
+    assert res["unmatched_consoles"] == []
+    assert sum("ACTION NEEDED" in l for l in lines) == 2 and events[0]["dut"] == "probe@lab-9"

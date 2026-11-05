@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `bsp probe --human`: find boards without reset wiring by asking a person to put each one into
+  download mode, pairing its console with the USB port that appears.
 - `bsp dut renew`: extend a lease from now, keeping its token.
 - `bsp dut pipe`: the board's serial-mux protocol on stdin/stdout, for programs; `dut status`
   reports `console_socket` and `console_up`.

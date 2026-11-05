@@ -441,11 +441,12 @@ class DutModule(Module):
         return {"removed": s.id}
 
     def probe(self, pins: str | None, consoles: str | None, identify: bool, sdks: str | None,
-              dry_run: bool) -> dict[str, Any]:
+              dry_run: bool, human: bool = False, rounds: int = 8, wait_s: float = 120) -> dict[str, Any]:
         from .probe import Prober
 
         prober = Prober(self, pins=pins, consoles=consoles, identify=identify,
-                        default_sdks=[s for s in (sdks or "").split(",") if s] or None)
+                        default_sdks=[s for s in (sdks or "").split(",") if s] or None,
+                        human=human, rounds=rounds, wait_s=wait_s)
         if dry_run:
             return prober.plan()
         job = self.ctx.jobs.start("probe", f"{self.ctx.host_id}: probe", prober.run, host=self.ctx.host_id)
@@ -583,7 +584,11 @@ class DutModule(Module):
                  Param("consoles", help="comma list of console candidates (serial-mux alias or /dev/tty*)", required=False),
                  Param("identify", "boolean", "boot U-Boot to read board identity (TLV)", required=False, default=True),
                  Param("sdks", help="comma list of sdks the found boards run (default by soc)", required=False),
-                 Param("dry_run", "boolean", "only show candidates, touch nothing", required=False, default=False)],
+                 Param("dry_run", "boolean", "only show candidates, touch nothing", required=False, default=False),
+                 Param("human", "boolean", "no GPIO: a person resets each unregistered board into download mode",
+                       required=False, default=False),
+                 Param("rounds", "integer", "human: at most this many boards", required=False, default=8),
+                 Param("wait_s", "number", "human: seconds to wait for each board", required=False, default=120)],
                 render=_render_probe,
                 description="Hook-driven (hooks/probe/*). Results are proposals: confirm with `bsp dut add`."),
         ]
