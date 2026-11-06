@@ -38,6 +38,55 @@ an AI tool, a web-console command and a CLI subcommand at once (`core/cmdspec.py
 that touches source trees is client-side: the CLI pipes a stdlib-only helper to the build
 server over ssh, so nothing is installed there.
 
+## Layers of a board host
+
+A board host is a remote flasher host: it resets boards, loads and flashes them over USB, and
+carries their serial consoles. Each of these is a service of its own, and the DUT manager binds
+the three to each board:
+
+```mermaid
+flowchart TB
+  subgraph hostd["bsp-hostd"]
+    dutm["DUT manager (dut module)<br/>registry · leases · busy guard · jobs · probe"]
+    subgraph relay["relay controller"]
+      ctl["control backends<br/>gpio-relay · human"]
+      gpio["gpio_relay module<br/>pins · relay/button channels · aliases"]
+      ctl --> gpio
+    end
+    subgraph download["download path"]
+      boot["boot runner<br/>recipes: load · download"]
+      fb["fastboot on the DUT's USB port<br/>artifact cache"]
+      boot --> fb
+    end
+    subgraph serial["serial console service"]
+      mux["serial-mux daemons<br/>bsp-console-ALIAS units"]
+      pipe["dut pipe · ssh console logins"]
+      pipe --> mux
+    end
+    dutm --> ctl
+    dutm --> boot
+    dutm --> mux
+    boot --> ctl
+  end
+```
+
+| Layer | Code | Its own commands | Extension point |
+|---|---|---|---|
+| Relay controller | `gpio_relay/`, `dut/control.py` | `bsp gpio`, `bsp relay`, `bsp button` | `GpioBackend`, `ControlBackend` |
+| Download path | `dut/hostio.py`, `dut/boot.py` | `bsp dut stage`, `present`, `boot` | recipe steps, `hooks/flash/*` |
+| Serial console service | `dut/consoles.py`, serial-mux | `bsp dut pipe`, `console`, `log` | serial-mux transports |
+| DUT manager | `dut/module.py`, `dut/commands.py`, `dut/leases.py`, `dut/probe.py` | `bsp dut …`, `bsp probe` | DUT specs, `hooks/probe/*` |
+
+A board's lines are aliases on the relay controller (`<dut>/reset`, `<dut>/fdl`, and any other
+line a site names `<dut>/<role>`), so a person, a script or a front end can work one line by hand
+with `bsp relay`/`bsp button` while the DUT manager uses the same lines for resets.
+
+boardlab, the lab-wide registry and front end, drives board hosts through this CLI only (`--json
+--stateless`): its `bsp` module maps its backend contract onto these layers — relay to `bsp dut
+reset`/`confirm` and to `bsp relay`/`bsp button` for single lines, download to `bsp dut
+stage`/`present`/`boot`, consoles to `bsp dut pipe`, inventory and discovery to `bsp dut list` and
+`bsp probe`, news to `bsp watch --registry`.
+
 ## Concepts
 
 ```mermaid
