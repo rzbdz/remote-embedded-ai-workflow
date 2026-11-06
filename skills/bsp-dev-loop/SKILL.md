@@ -131,7 +131,7 @@ bsp sdk release <sdk>        # parks uncommitted work as a stash, restores the o
 
 ## Consoles for people
 
-`bsp dut console <dut>` without a command attaches interactively (Ctrl+] leaves; needs a
+`bsp dut console <dut>` without a command attaches interactively (Ctrl-A Ctrl-X leaves, Ctrl-C goes to the board; needs a
 terminal and ssh access to the host). Hosts with console logins enabled also accept
 `ssh bsp-<dut>@<host>` with no password; `bsp dut logins` prints the exact lines. Give these to
 the user rather than running them yourself.

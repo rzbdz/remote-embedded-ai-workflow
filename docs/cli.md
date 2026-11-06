@@ -34,7 +34,7 @@ How hosts are chosen without `-r`/`--url` is described in
 | `bsp dut stage DUT FILE [--no-continue] [--timeout S]` | Send a local file to the host (once, by sha256) and load it into RAM: `fastboot stage` + `continue` |
 | `bsp dut present DUT` | Whether the board's download/fastboot port is on the USB bus |
 | `bsp dut console DUT "CMD" [--expect RE] [--timeout S]` | Run one shell command on the console and print its output |
-| `bsp dut console DUT` | Attach interactively over ssh (Ctrl+] detaches) |
+| `bsp dut console DUT` | Attach interactively over ssh (Ctrl-A Ctrl-X detaches, as in picocom) |
 | `bsp dut pipe DUT` | Raw serial-mux protocol on stdin/stdout, for programs (see [Console pipe](#console-pipe)) |
 | `bsp dut confirm DUT [NOTE]` | Tell a waiting reset/boot that the requested manual action is done |
 | `bsp dut logins` | `ssh` commands that open each board's console (if enabled on the host) |

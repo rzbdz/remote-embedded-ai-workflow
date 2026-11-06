@@ -10,7 +10,7 @@ How a login works:
     -> login shell /usr/local/lib/bsp/console-shell (ignores any requested command)
     -> sudo -n /usr/local/lib/bsp/console-attach   (no arguments allowed by sudoers)
     -> console-attach (root) maps $SUDO_USER to a DUT via /etc/bsp/console-logins.json
-       and execs `smtty <alias>`; Ctrl+] ends the session.
+       and execs `smtty <alias>`; Ctrl-A Ctrl-X ends the session.
 Users are recognised by their GECOS field ("bsp-console <dut>"); other accounts are never
 touched.
 """
@@ -59,7 +59,7 @@ try:
     lease = "leased by %s" % l["holder"] if l.get("holder") else "not leased"
 except Exception:
     pass
-sys.stderr.write("bsp: %s console on %s (%s) %s- Ctrl+] to leave\r\n"
+sys.stderr.write("bsp: %s console on %s (%s) %s- Ctrl-A Ctrl-X to leave\r\n"
                  % (e["dut"], m.get("host", "?"), e["alias"], "[" + lease + "] " if lease else ""))
 os.environ["HOME"] = m.get("home", "/root")
 os.execv(e["smtty"], [e["smtty"], e["alias"]])

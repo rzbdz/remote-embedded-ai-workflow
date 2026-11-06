@@ -266,7 +266,7 @@ def _pipe(h: HostHandle, dut: str) -> tuple[Any, str]:
 
 
 def _attach(h: HostHandle, dut: str, args) -> tuple[Any, str]:
-    """Interactive console for humans: smtty on the host over ssh (Ctrl+] detaches)."""
+    """Interactive console for humans: smtty on the host over ssh (Ctrl-A Ctrl-X detaches)."""
     import shutil
     import subprocess
 
@@ -279,7 +279,7 @@ def _attach(h: HostHandle, dut: str, args) -> tuple[Any, str]:
     if not sys.stdin.isatty():
         raise InvalidRequest("interactive console needs a terminal", hint=f"run one command: bsp dut console {dut} 'CMD'")
     ssh = shutil.which("ssh") or "ssh"
-    print(f"attaching to {dut} console ({st['console']} on {h.id}); Ctrl+] detaches", file=sys.stderr)
+    print(f"attaching to {dut} console ({st['console']} on {h.id}); Ctrl-A Ctrl-X detaches", file=sys.stderr)
     cmd = st.get("console_attach") or f"smtty {st['console']}"      # host-reported smtty path
     rc = subprocess.call([ssh, "-t", target, cmd])
     return {"rc": rc}, ""

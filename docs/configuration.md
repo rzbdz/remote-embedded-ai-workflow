@@ -149,7 +149,8 @@ registry list` (and `GET /api/v1/registry/list`) shows the hosts.
 
 With `modules.dut.ssh_console.enabled: true`, the host keeps one system user per board, named
 `<prefix><dut>`. Logging in as that user over ssh (no password) attaches to the board's console
-and nothing else: there is no shell, port forwarding is disabled, and Ctrl+] ends the session.
+and nothing else: there is no shell, port forwarding is disabled, and Ctrl-A Ctrl-X ends the session (picocom's keys;
+Ctrl-C and every other key go to the board).
 The users follow the board registry automatically — they are created when a board is added,
 renamed with it, and deleted (ending open sessions) when it is removed. Disabling the option
 removes the users and every file bsp installed for them. `bsp dut logins` lists the ready-to-use

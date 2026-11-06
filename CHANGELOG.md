@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Interactive consoles (`bsp dut console`, console logins) leave with Ctrl-A Ctrl-X, as in picocom;
+  Ctrl+] and Ctrl-C now go to the board (serial-mux's smtty reads picocom's keys).
+
 ### Fixed
 - The SpacemiT flash hook skips a medium U-Boot reports as `NULL` (no SPI NOR on a UFS board)
   instead of flashing a NOR layout there and failing after the block layout was written.
